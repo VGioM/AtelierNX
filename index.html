@@ -6,15 +6,10 @@
 <title>Atelier NX</title>
 <style>
 :root {
-  --bg: #f4f4f6; --panel: #ffffff; --line: #e2e2e7; --text: #1c1c1f; --muted: #6b6b75;
-  --accent: #e4002b; --accent-ink: #fff; --ok: #1f8a4c; --warn: #b26a00; --err: #c62828;
-  --chip: #eeeef2; --bar: #e8e8ee; --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #17171a; --panel: #212125; --line: #313137; --text: #ececf0; --muted: #9a9aa5;
-    --accent: #ff3b55; --chip: #2c2c32; --bar: #2c2c32; --shadow: none;
-  }
+  color-scheme: dark;
+  --bg: #17171a; --panel: #212125; --line: #313137; --text: #ececf0; --muted: #9a9aa5;
+  --accent: #ff3b55; --accent-ink: #fff; --ok: #3ccf7a; --warn: #f0a63a; --err: #ff6b6b;
+  --chip: #2c2c32; --bar: #2c2c32; --shadow: none;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }

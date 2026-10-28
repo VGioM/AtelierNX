@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
     func applicationDidFinishLaunching(_ note: Notification) {
         buildMenu()
+        NSApp.appearance = NSAppearance(named: .darkAqua)   // interface sombre, comme la page
         let cfg = WKWebViewConfiguration()
         web = WKWebView(frame: .zero, configuration: cfg)
         web.uiDelegate = self
@@ -18,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Atelier NX"
+        window.backgroundColor = NSColor(calibratedRed: 0.09, green: 0.09, blue: 0.10, alpha: 1)
+        web.setValue(false, forKey: "drawsBackground")   // pas d'éclair blanc avant le chargement de la page
         window.contentView = web
         window.setFrameAutosaveName("AtelierNX")
         window.center()
@@ -85,7 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     }
 
     func fail(_ msg: String) {
-        web.loadHTMLString("<body style='font:15px -apple-system;padding:40px;color:#c62828'>\(msg)</body>", baseURL: nil)
+        web.loadHTMLString("<body style='font:15px -apple-system;padding:40px;color:#ff6b6b;background:#17171a'>\(msg)</body>", baseURL: nil)
     }
 
     // Le jeton est dans la page : on le relit pour interroger /api/busy à la fermeture.
