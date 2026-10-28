@@ -86,8 +86,8 @@ def profile_name(cfg, gid):
     """Nom officiel du jeu, lu dans le titre du README de son profil nxnative."""
     try:
         first = (Path(cfg['nxnative']) / 'dm/games' / gid / 'README.md').read_text().splitlines()[0]
-        m = re.match(r'#\s+(.+?)\s+\(`', first)
-        return m.group(1) if m else None
+        m = re.match(r'#\s+(.+?)(?:\s+\(`.*)?$', first)
+        return m.group(1).strip() if m else None
     except (OSError, IndexError):
         return None
 
@@ -293,6 +293,77 @@ def scan(cfg):
     out.sort(key=lambda g: (not g['profile'], g['name'].lower()))
     fetch_banners([g['id'] for g in out if not g['icon']])
     return out, orphans, archives
+
+
+# ---------- catalogue : jeux qui ont un profil nxnative ----------
+# Lu dans la branche distante (git fetch, sans toucher au clone : sans risque pendant un build), rafraîchi toutes les 6 h.
+CATALOG = SUPPORT / 'catalog.json'
+CATALOG_EVERY = 6 * 3600
+REGIONAL = re.compile(r',\s+(Asian|Japanese|Korean|Chinese|European|American)\s+release$', re.I)
+_catalog_lock = threading.Lock()
+
+
+def build_catalog(cfg, fetch):
+    with _catalog_lock:
+        if fetch:
+            git(cfg, 'fetch', '--quiet', timeout=300)
+        code, ref = git(cfg, 'rev-parse', '@{u}')
+        if code:
+            code, ref = git(cfg, 'rev-parse', 'HEAD')
+        if code:
+            return None
+        code, out = git(cfg, 'ls-tree', '--name-only', ref, 'dm/games/')
+        ids = [l.split('/')[-1] for l in out.splitlines() if re.fullmatch(r'[0-9A-F]{16}', l.split('/')[-1])]
+        r = subprocess.run(['git', '-C', cfg['nxnative'], 'cat-file', '--batch'], input=''.join(f'{ref}:dm/games/{i}/README.md\n' for i in ids).encode(),
+                           capture_output=True, timeout=120)
+        data, pos, names = r.stdout, 0, {}
+        for i in ids:
+            nl = data.index(b'\n', pos); head = data[pos:nl].split(); pos = nl + 1
+            if len(head) == 3:
+                size = int(head[2]); text = data[pos:pos + size].decode(errors='replace'); pos += size + 1
+                m = re.match(r'#\s+(.+?)(?:\s+\(`.*)?$', text.split('\n', 1)[0])
+                names[i] = m.group(1).strip() if m else i
+            else:
+                names[i] = i
+        local = {p.name for p in (Path(cfg['nxnative']) / 'dm/games').iterdir()} if (Path(cfg['nxnative']) / 'dm/games').is_dir() else set()
+        cat = {'fetched': time.time(), 'ref': ref[:7],
+               'games': [{'id': i, 'name': names[i], 'new': i not in local} for i in ids]}
+        save_json(CATALOG, cat)
+        return cat
+
+
+def catalog_for(cfg, owned):
+    """Jeux avec profil que l'on n'a pas. Une variante régionale (« …, Asian release ») est fusionnée avec le jeu principal."""
+    cat = load_json(CATALOG, None)
+    if not cat:
+        return None
+    owned_ids = {g['id'] for g in owned}
+    owned_names = {g['name'].lower() for g in owned}
+    main_names = {g['name'].lower() for g in cat['games'] if not REGIONAL.search(g['name'])}
+    out = []
+    for g in cat['games']:
+        if g['id'] in owned_ids:
+            continue
+        base = REGIONAL.sub('', g['name']).lower()
+        if REGIONAL.search(g['name']) and (base in main_names or base in owned_names):
+            continue
+        if g['name'].lower() in owned_names:
+            continue
+        out.append({**g, 'icon': icon_url(g['id'])})
+    out.sort(key=lambda g: g['name'].lower())
+    fetch_banners([g['id'] for g in out if not g['icon']])
+    return {'fetched': cat['fetched'], 'ref': cat['ref'], 'games': out}
+
+
+def catalog_loop():
+    while True:
+        try:
+            cat = load_json(CATALOG, None)
+            if not cat or time.time() - cat.get('fetched', 0) > CATALOG_EVERY:
+                build_catalog(config(), fetch=True)
+        except Exception:
+            pass
+        time.sleep(1800)
 
 
 _banner_lock = threading.Lock()
@@ -665,10 +736,11 @@ class Handler(BaseHTTPRequestHandler):
         cfg = config()
         if u.path == '/api/state':
             games, orphans, archives = scan(cfg)
+            catalog = catalog_for(cfg, games)
             nx_ok = (Path(cfg['nxnative']) / 'scripts/build_ipa_from_nsp.py').exists()
             head = git(cfg, 'log', '-1', '--format=%h|%cd', '--date=format:%d/%m %H:%M')[1] if nx_ok else ''
             return self.send(200, {
-                'config': cfg, 'games': games, 'orphans': orphans, 'archives': archives, 'unzipping': sorted(UNZIPPING),
+                'config': cfg, 'games': games, 'orphans': orphans, 'archives': archives, 'unzipping': sorted(UNZIPPING), 'catalog': catalog,
                 'rom': Path(cfg['romDir']).is_dir(), 'keys': Path(cfg['keys']).is_file(),
                 'nxnative': {'ok': nx_ok, 'head': head},
                 'job': {'busy': JOB.busy(), 'info': JOB.info, 'result': JOB.result},
@@ -782,10 +854,19 @@ class Handler(BaseHTTPRequestHandler):
                 n = git(cfg, 'rev-list', '--count', 'HEAD..@{u}')[1]
                 logs = git(cfg, 'log', '--format=%h  %cd  %s', '--date=format:%d/%m %H:%M', '-15', 'HEAD..@{u}')[1]
                 return self.send(200, {'ok': True, 'behind': int(n or 0), 'log': logs})
+            if u.path == '/api/catalog/refresh':
+                build_catalog(cfg, fetch=True); return self.send(200, {'ok': True})
+            if u.path == '/api/profile-page':
+                gid = req.get('id', '')
+                if not re.fullmatch(r'[0-9A-F]{16}', gid):
+                    return self.send(400, {'error': 'identifiant invalide'})
+                subprocess.Popen(['open', f'https://github.com/seedds/nxnative/tree/main/dm/games/{gid}'])
+                return self.send(200, {'ok': True})
             if u.path == '/api/nx/pull':
                 if JOB.busy():
                     return self.send(409, {'error': 'Attends la fin du build en cours.'})
                 code, outp = git(cfg, 'pull', '--ff-only', '--autostash', timeout=600)
+                build_catalog(cfg, fetch=False)   # les « nouveau » disparaissent une fois le clone à jour
                 return self.send(200, {'ok': code == 0, 'msg': outp})
             return self.send(404, {'error': 'inconnu'})
         except Exception as e:
@@ -813,6 +894,7 @@ def main():
     signal.signal(signal.SIGHUP, stop)
     # Permet à l'app de réutiliser un serveur déjà lancé (et son build en cours) au lieu d'en démarrer un second.
     save_json(SUPPORT / 'server.json', {'port': port, 'pid': os.getpid()})
+    threading.Thread(target=catalog_loop, daemon=True).start()
     print(f'PORT {port}', flush=True)
     if a.open:
         webbrowser.open(f'http://127.0.0.1:{port}/')

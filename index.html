@@ -28,6 +28,7 @@ main { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; min-heigh
 .group { padding: 14px 14px 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
 .game { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .game:hover { background: var(--chip); }
+.game.cat { padding: 7px 14px; } .game.cat .thumb { width: 34px; height: 34px; border-radius: 7px; opacity: .85; }
 .game.sel { background: var(--chip); box-shadow: inset 3px 0 0 var(--accent); }
 .thumb { width: 46px; height: 46px; border-radius: 9px; object-fit: cover; background: var(--chip); flex: none; display: grid; place-items: center; color: var(--muted); font-weight: 700; }
 .game .t { font-weight: 600; }
@@ -205,8 +206,15 @@ function renderList() {
     return `<div class="note warn small" style="margin:8px 12px">${esc(a.rel)} <span class="muted">(${gb(a.size)})</span><br>${busy ? 'Décompression en cours…' : zip ? `<button class="link" onclick="unzip(${esc(JSON.stringify(a.path))})">Décompresser ici</button>` : 'Format non pris en charge ici : décompresse-la dans le Finder.'}</div>`;
   }).join('');
   if (S.orphans.length) h += `<div class="group">Non reconnus · ${S.orphans.length}</div>` + S.orphans.map(o => `<div class="note err small" style="margin:8px 12px">${esc(o.rel)}<br><span class="muted">${esc(o.why)}</span></div>`).join('');
+  if (S.catalog?.games.length) {
+    const c = S.catalog, nNew = c.games.filter(g => g.new).length;
+    h += `<div class="group">Compatibles que tu n'as pas · ${c.games.length}</div>
+      <div class="muted small" style="padding:6px 14px 8px;border-bottom:1px solid var(--line)">Jeux qui ont un profil nxnative. Liste mise à jour toutes les 6 h (dernière : ${new Date(c.fetched * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})${nNew ? ` · ${nNew} « nouveau » : arrivés depuis ta dernière mise à jour de nxnative` : ''}. <button class="link small" onclick="refreshCatalog(this)">Actualiser</button></div>`
+      + c.games.map(g => `<div class="game cat" data-cat="${g.id}" title="Voir le profil sur GitHub">${thumb(g)}<div><div class="t" style="font-weight:500">${esc(g.name)}</div>${g.new ? '<div class="chips"><span class="chip ok">nouveau</span></div>' : ''}</div></div>`).join('');
+  }
   el.innerHTML = h || '<div class="note" style="margin:14px">Aucun jeu trouvé dans ce dossier.</div>';
-  el.querySelectorAll('.game').forEach(n => n.onclick = () => { sel = n.dataset.id; renderList(); renderDetail(); });
+  el.querySelectorAll('.game.cat').forEach(n => n.onclick = () => api('/api/profile-page', { id: n.dataset.cat }));
+  el.querySelectorAll('.game:not(.cat)').forEach(n => n.onclick = () => { sel = n.dataset.id; renderList(); renderDetail(); });
 }
 
 function gameOpts(g) {
@@ -316,6 +324,7 @@ async function build(id) {
   catch (e) { alertBox(e.message); }
 }
 async function unzip(path) { await api('/api/unzip', { path }); refresh(); const t = setInterval(async () => { await refresh(); if (!S.unzipping.length) clearInterval(t); }, 3000); }
+async function refreshCatalog(b) { b.textContent = 'Actualisation…'; try { await api('/api/catalog/refresh', {}); } finally { refresh(); } }
 async function cancelBuild() { await api('/api/cancel', {}); }
 async function openIt(id, platform, what, reveal) { try { await api('/api/open', { id, platform, what, reveal }); } catch (e) { alertBox(e.message); } }
 async function importSave(id, exists) {
