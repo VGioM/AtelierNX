@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atelier NX</title>
+<style>
+:root {
+  --bg: #f4f4f6; --panel: #ffffff; --line: #e2e2e7; --text: #1c1c1f; --muted: #6b6b75;
+  --accent: #e4002b; --accent-ink: #fff; --ok: #1f8a4c; --warn: #b26a00; --err: #c62828;
+  --chip: #eeeef2; --bar: #e8e8ee; --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17171a; --panel: #212125; --line: #313137; --text: #ececf0; --muted: #9a9aa5;
+    --accent: #ff3b55; --chip: #2c2c32; --bar: #2c2c32; --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; }
+header .sp { flex: 1; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.primary:disabled { opacity: .45; cursor: default; }
+button.link { border: none; background: none; padding: 2px 4px; color: var(--accent); }
+main { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; min-height: calc(100vh - 56px); }
+#list { border-right: 1px solid var(--line); overflow-y: auto; max-height: calc(100vh - 56px); }
+.game { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.game:hover { background: var(--chip); }
+.game.sel { background: var(--chip); box-shadow: inset 3px 0 0 var(--accent); }
+.thumb { width: 46px; height: 46px; border-radius: 9px; object-fit: cover; background: var(--chip); flex: none; display: grid; place-items: center; color: var(--muted); font-weight: 700; }
+.game .t { font-weight: 600; }
+.chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 3px; }
+.chip { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+.chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.err { color: var(--err); }
+#detail { padding: 22px 26px; overflow-y: auto; max-height: calc(100vh - 56px); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 16px; box-shadow: var(--shadow); }
+.card h3 { margin: 0 0 10px; font-size: 14px; }
+.hero { display: flex; gap: 16px; align-items: center; margin-bottom: 18px; }
+.hero .thumb { width: 84px; height: 84px; border-radius: 16px; font-size: 26px; }
+.hero h2 { margin: 0; font-size: 21px; letter-spacing: -.015em; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.row label.k { width: 130px; color: var(--muted); }
+select, input[type=text] { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); }
+input[type=text] { width: 100%; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: none; border-radius: 0; padding: 6px 14px; }
+.seg button.on { background: var(--accent); color: var(--accent-ink); }
+.files { font-size: 12px; color: var(--muted); margin: 6px 0 0; padding-left: 18px; }
+.files li { word-break: break-all; }
+.stage { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; }
+.stage .ic { width: 16px; flex: none; text-align: center; }
+.stage.done .ic { color: var(--ok); } .stage.fail .ic { color: var(--err); }
+.bar { height: 8px; background: var(--bar); border-radius: 99px; overflow: hidden; margin: 8px 0 4px; }
+.bar > div { height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+.bar.indet > div { width: 30% !important; animation: slide 1.3s ease-in-out infinite; }
+@keyframes slide { from { margin-left: -30%; } to { margin-left: 100%; } }
+pre.log { background: var(--chip); border-radius: 8px; padding: 10px; font: 11.5px/1.5 ui-monospace, Menlo, monospace; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 10px 0 0; }
+pre.log .err { color: var(--err); }
+.note { padding: 9px 12px; border-radius: 8px; background: var(--chip); margin: 8px 0; }
+.note.warn { border-left: 3px solid var(--warn); } .note.ok { border-left: 3px solid var(--ok); } .note.err { border-left: 3px solid var(--err); }
+.empty { display: grid; place-items: center; height: 60vh; color: var(--muted); text-align: center; }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); width: min(640px, 92vw); padding: 18px 20px; }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+textarea { width: 100%; min-height: 110px; font: 12px ui-monospace, Menlo, monospace; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); padding: 8px; }
+details summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; } #list { max-height: none; border-right: none; } #detail { max-height: none; padding: 16px; } .row label.k { width: 100%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Atelier NX</h1>
+  <span class="muted small" id="nxhead"></span>
+  <span class="sp"></span>
+  <span class="small" id="nxupd"></span>
+  <button id="btnCheck">Vérifier les mises à jour de nxnative</button>
+  <button id="btnSettings">Réglages</button>
+</header>
+<main>
+  <div id="list"></div>
+  <div id="detail"><div class="empty">Choisis un jeu à gauche.</div></div>
+</main>
+
+<dialog id="dlgSettings">
+  <h3 style="margin-top:0">Réglages</h3>
+  <div id="settingsForm"></div>
+  <div class="row" style="justify-content:flex-end;margin-top:14px">
+    <button onclick="dlgSettings.close()">Annuler</button>
+    <button class="primary" id="btnSaveSettings">Enregistrer</button>
+  </div>
+</dialog>
+
+<dialog id="dlgEnv">
+  <h3 style="margin-top:0">Réglages forcés (env.txt)</h3>
+  <p class="muted small">Une ligne <code>NOM=valeur</code> par réglage. Ces lignes l'emportent sur la fenêtre de réglages du jeu, qui les affiche alors grisées. Laisse vide pour tout régler depuis la fenêtre du jeu.<br>
+  Exemples : <code>DM_FULLSCREEN=1</code>, <code>DM_FPS_TARGET=60</code>, <code>DM_OPMODE=1</code> (mode TV), <code>DM_LAUNCHER=0</code> (sans fenêtre de réglages).</p>
+  <textarea id="envText" spellcheck="false"></textarea>
+  <div class="row" style="justify-content:flex-end;margin-top:12px">
+    <button onclick="dlgEnv.close()">Annuler</button>
+    <button class="primary" id="btnSaveEnv">Enregistrer</button>
+  </div>
+</dialog>
+
+<script>
+const TOKEN = '__TOKEN__';
+const LANGS = [['fr','Français'],['fr-CA','Français (Canada)'],['en-US','English (US)'],['en-GB','English (UK)'],['es','Español'],['es-419','Español (Latinoamérica)'],['de','Deutsch'],['it','Italiano'],['nl','Nederlands'],['pt','Português'],['pt-BR','Português (Brasil)'],['ru','Русский'],['ja','日本語'],['ko','한국어'],['zh-Hans','中文（简体）'],['zh-Hant','中文（繁體）']];
+const PLAT = {'mac-app': 'Mac', 'ios': 'iPhone / iPad'};
+let S = null, sel = null, opts = {}, since = 0, es = null;
+let live = { stages: [], cur: null, prog: null, log: [], done: null };
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? { headers: { 'X-Token': TOKEN } }
+    : { method: 'POST', headers: { 'X-Token': TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+const gb = n => n < 1e9 ? Math.max(1, Math.round(n / 1e6)) + ' Mo' : (n / 1e9).toFixed(n > 1e10 ? 0 : 1).replace('.', ',') + ' Go';
+const qty = (n, u) => u === 'B' ? gb(n) : `${n.toLocaleString('fr-FR')} ${esc(u || '')}`;
+const upd = v => 'mise à jour n°' + Math.round(v / 65536);
+function fmtDur(s) { if (s == null) return ''; s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return h ? `${h} h ${String(m).padStart(2,'0')}` : m ? `${m} min ${String(x).padStart(2,'0')}` : `${x} s`; }
+function thumb(g, cls = '') { return g.icon ? `<img class="thumb ${cls}" src="${g.icon}" alt="">` : `<div class="thumb ${cls}">${esc(g.name[0] || '?')}</div>`; }
+
+async function refresh() {
+  S = await api('/api/state');
+  const [h, d] = (S.nxnative.head || '|').split('|');
+  $('#nxhead').textContent = S.nxnative.ok ? `nxnative ${h} (${d})` : 'nxnative introuvable : vérifie les réglages';
+  renderList();
+  if (sel) renderDetail();
+  if (S.job.busy && !es) follow();
+}
+
+function renderList() {
+  const el = $('#list');
+  if (!S.rom) { el.innerHTML = `<div class="note err" style="margin:14px">Dossier des jeux introuvable :<br><code>${esc(S.config.romDir)}</code><br>Le Lexar est-il branché ?</div>`; return; }
+  el.innerHTML = S.games.map(g => {
+    const chips = [];
+    chips.push(g.profile ? '<span class="chip ok">profil</span>' : '<span class="chip warn">sans profil</span>');
+    if (!g.hasBase) chips.push('<span class="chip err">jeu de base absent</span>');
+    for (const b of g.builds) chips.push(`<span class="chip ${b.stale ? 'warn' : 'ok'}">${PLAT[b.platform]} ✓</span>`);
+    if (S.job.busy && S.job.info?.id === g.id) chips.push('<span class="chip warn">en cours…</span>');
+    return `<div class="game ${sel === g.id ? 'sel' : ''}" data-id="${g.id}">${thumb(g)}<div><div class="t">${esc(g.name)}</div><div class="chips">${chips.join('')}</div></div></div>`;
+  }).join('') + (S.orphans.length ? `<div class="note warn" style="margin:12px">${S.orphans.length} fichier(s) sans [title ID] dans le nom, ignoré(s).</div>` : '');
+  el.querySelectorAll('.game').forEach(n => n.onclick = () => { sel = n.dataset.id; renderList(); renderDetail(); });
+}
+
+function gameOpts(g) {
+  if (!opts[g.id]) opts[g.id] = { platform: 'mac-app', language: S.config.language || 'fr', update: g.updates.length ? 'all' : 'none', dlc: true, noMotion: false, romfsSeparate: false, allowDamaged: false };
+  return opts[g.id];
+}
+
+function renderDetail() {
+  const g = S.games.find(x => x.id === sel); if (!g) return;
+  const o = gameOpts(g);
+  const running = S.job.busy || (live.done === null && es && S.job.info);
+  const mine = S.job.info?.id === g.id;
+  const newest = g.updates.at(-1);
+  let h = `<div class="hero">${thumb(g)}<div><h2>${esc(g.name)}</h2><div class="muted small">${g.id}</div>
+    <div class="chips" style="margin-top:6px">${g.profile ? '<span class="chip ok">profil nxnative : testé</span>' : '<span class="chip warn">pas de profil : build d\'essai, démarrage incertain</span>'}</div></div></div>`;
+
+  // Apps déjà construites
+  if (g.builds.length) {
+    h += `<div class="card"><h3>Prêt à jouer</h3>`;
+    for (const b of g.builds) {
+      h += `<div class="row"><b>${PLAT[b.platform]}</b><span class="muted small">construit le ${esc(b.built)} · langue ${esc(b.language)} · nxnative ${esc(b.commit)}</span></div>`;
+      if (b.stale) h += `<div class="note warn small">nxnative a changé depuis ce build. Reconstruire récupère les correctifs (l'extraction du jeu est réutilisée, c'est plus rapide).</div>`;
+      h += `<div class="row">`;
+      if (b.platform === 'mac-app') h += `<button class="primary" onclick="openIt('${g.id}','mac-app')">▶ Jouer</button>`;
+      h += `<button onclick="openIt('${g.id}','${b.platform}',null,true)">Afficher dans le Finder</button>`;
+      if (b.platform === 'mac-app') h += `<button onclick="openIt('${g.id}','mac-app','log')">Journal du jeu</button><button onclick="editEnv('${g.id}')">Réglages forcés…</button>`;
+      h += `</div>`;
+    }
+    if (g.builds.some(b => b.platform === 'mac-app')) {
+      h += `<p class="muted small">La fenêtre qui s'ouvre avant le jeu permet de changer la langue, la fréquence d'images, le plein écran… Maintiens ⌥ (Option) au lancement pour la revoir si tu l'as masquée.</p>`;
+      if (g.envTxt.length) h += `<div class="note warn small">Réglages forcés dans env.txt (grisés dans la fenêtre du jeu) : <code>${esc(g.envTxt.join('  '))}</code> <button class="link" onclick="editEnv('${g.id}')">modifier</button></div>`;
+      if (g.save.old) h += `<div class="row small"><span class="muted">${g.save.exists ? 'Sauvegarde nxnative présente.' : 'Pas encore de sauvegarde nxnative.'} Une ancienne sauvegarde NX2Apple existe.</span><button class="link" onclick="importSave('${g.id}', ${g.save.exists})">Reprendre l'ancienne sauvegarde</button><button class="link" onclick="openIt('${g.id}','mac-app','data')">Dossier de données</button></div>`;
+    }
+    h += `</div>`;
+  }
+
+  // Construction
+  h += `<div class="card"><h3>${g.builds.length ? 'Reconstruire' : 'Construire'}</h3>`;
+  if (!g.hasBase) h += `<div class="note err">Le jeu de base n'est pas dans le dossier : impossible de construire.</div>`;
+  h += `<div class="row"><label class="k">Pour</label><span class="seg">${Object.entries(PLAT).map(([k, v]) => `<button class="${o.platform === k ? 'on' : ''}" onclick="setOpt('platform','${k}')">${v}</button>`).join('')}</span></div>`;
+  h += `<div class="row"><label class="k">Langue du jeu</label><select onchange="setOpt('language',this.value)">${LANGS.map(([c, n]) => `<option value="${c}" ${o.language === c ? 'selected' : ''}>${n}</option>`).join('')}</select><span class="muted small">modifiable ensuite dans la fenêtre du jeu</span></div>`;
+  h += `<div class="row"><label class="k">Mise à jour</label><select onchange="setOpt('update',this.value)">`
+    + (g.updates.length ? `<option value="all" ${o.update === 'all' ? 'selected' : ''}>la plus récente (${upd(newest.ver)})</option>` + g.updates.slice(0, -1).map(u => `<option value="${u.ver}" ${String(o.update) === String(u.ver) ? 'selected' : ''}>${upd(u.ver)}</option>`).join('') : '')
+    + `<option value="none" ${o.update === 'none' ? 'selected' : ''}>aucune (jeu de base seul)</option></select></div>`;
+  if (g.dlc.length) h += `<div class="row"><label class="k">DLC</label><label><input type="checkbox" ${o.dlc ? 'checked' : ''} onchange="setOpt('dlc',this.checked)"> inclure les ${g.dlc.length} DLC</label></div>`;
+  h += `<details><summary>Options avancées</summary>
+    <div class="row"><label><input type="checkbox" ${o.noMotion ? 'checked' : ''} onchange="setOpt('noMotion',this.checked)"> Sans détection de mouvement (si les commandes gyroscopiques font n'importe quoi)</label></div>
+    ${o.platform === 'ios' ? `<div class="row"><label><input type="checkbox" ${o.romfsSeparate ? 'checked' : ''} onchange="setOpt('romfsSeparate',this.checked)"> Fichiers du jeu à part (IPA plus petite, à copier une fois sur l'iPhone)</label></div>` : ''}
+    <div class="row"><label><input type="checkbox" ${o.allowDamaged ? 'checked' : ''} onchange="setOpt('allowDamaged',this.checked)"> Continuer malgré des fichiers endommagés</label></div>
+  </details>`;
+  const files = [g.base, ...(o.update === 'all' ? g.updates : g.updates.filter(u => String(u.ver) === String(o.update))), ...(o.dlc ? g.dlc : [])].filter(Boolean);
+  h += `<ul class="files">${files.map(f => `<li>${esc(f.name)} <span>(${gb(f.size)})</span></li>`).join('')}</ul>`;
+  h += `<p class="muted small">Premier build : 30 à 60 min. Les suivants sont bien plus rapides. Place nécessaire : environ 2 × la taille du jeu + 10 Go sur le Lexar.</p>`;
+  h += `<div class="row"><button class="primary" ${!g.hasBase || running ? 'disabled' : ''} onclick="build('${g.id}')">${running && !mine ? 'Un autre build est en cours' : 'Construire'}</button></div></div>`;
+
+  // Suivi
+  if (mine && (S.job.busy || live.stages.length || live.log.length)) h += `<div class="card" id="progress"></div>`;
+  $('#detail').innerHTML = h;
+  if ($('#progress')) renderProgress();
+}
+
+function setOpt(k, v) { gameOpts(S.games.find(x => x.id === sel))[k] = v; renderDetail(); }
+
+function renderProgress() {
+  const el = $('#progress'); if (!el) return;
+  const info = S.job.info || {};
+  let h = `<h3>${live.done ? (live.done.ok ? '✓ Terminé' : live.done.cancelled ? 'Annulé' : '✗ Échec') : 'Construction en cours'} · ${PLAT[info.platform] || ''} · ${esc(info.language || '')}</h3>`;
+  for (const s of live.stages) h += `<div class="stage ${s.end ? (s.end.ok === false ? 'fail' : 'done') : ''}"><span class="ic">${s.end ? (s.end.ok === false ? '✗' : '✓') : '•'}</span><span>[${s.k}/${s.n}] ${esc(s.name)}${s.end ? ` <span class="muted small">${esc(s.end.summary || '')} · ${fmtDur(s.end.elapsed)}</span>` : s.step ? ` <span class="muted small">— ${esc(s.step)}</span>` : ''}</span></div>`;
+  if (!live.done) {
+    const p = live.prog, f = p && p.frac != null ? p.frac : null;
+    h += `<div class="bar ${f == null ? 'indet' : ''}"><div style="width:${f == null ? 0 : (f * 100).toFixed(1)}%"></div></div>`;
+    if (p) h += `<div class="muted small">${f != null ? Math.round(f * 100) + ' %' : ''}${p.done != null && p.total != null ? ` · ${qty(p.done, p.unit)} / ${p.est ? '~' : ''}${qty(p.total, p.unit)}` : ''}${p.eta != null ? ` · reste ${fmtDur(p.eta)}` : ''}${p.note ? ' · ' + esc(p.note) : ''}</div>`;
+    h += `<div class="row"><button onclick="cancelBuild()">Annuler le build</button><span class="muted small">démarré il y a ${fmtDur((Date.now() / 1000) - info.started)}</span></div>`;
+  } else if (live.done.ok) {
+    h += `<div class="note ok">${info.platform === 'mac-app' ? 'L\'app du jeu est prête : bouton « Jouer » plus haut.' : 'L\'IPA est prête : installe-la avec AltStore, Sideloadly ou LiveContainer (active « Increased Memory Limit » si proposé).'}<br><span class="small muted">${esc(info.out)}</span></div>`;
+  } else if (!live.done.cancelled) {
+    h += `<div class="note err">Le build a échoué. Le détail est dans le journal ci-dessous. <button class="link" onclick="openIt('${info.id}',null,'buildlog')">Journal complet</button></div>`;
+  }
+  h += `<pre class="log">${live.log.slice(-200).map(l => l.err ? `<span class="err">${esc(l.msg)}</span>` : esc(l.msg)).join('\n')}</pre>`;
+  el.innerHTML = h;
+  const pre = el.querySelector('pre'); pre.scrollTop = pre.scrollHeight;
+}
+
+function onEvent(e) {
+  since = e.seq;
+  switch (e.ev) {
+    case 'stage': { live.stages.forEach(s => s.end ||= { ok: true }); live.cur = { k: e.k, n: e.n, name: e.name, step: e.step }; live.stages.push(live.cur); live.prog = null; break; }
+    case 'step': if (live.cur) live.cur.step = e.step ?? e.name ?? e.msg; break;
+    case 'progress': live.prog = e; if (live.cur && e.step) live.cur.step = e.step; break;
+    case 'stage_end': if (live.cur) live.cur.end = { ok: e.ok, summary: e.summary, elapsed: e.elapsed }; live.prog = null; break;
+    case 'say': live.log.push({ msg: e.msg, err: e.err }); break;
+    case 'done': live.done = e; setTimeout(refresh, 300); break;
+  }
+}
+
+let raf = 0;
+function follow() {
+  if (es) es.close();
+  live = { stages: [], cur: null, prog: null, log: [], done: null }; since = 0;
+  es = new EventSource(`/api/events?since=0&token=${TOKEN}`);
+  es.onmessage = m => { onEvent(JSON.parse(m.data)); if (!raf) raf = requestAnimationFrame(() => { raf = 0; if (S.job.info?.id === sel) { if (!$('#progress')) renderDetail(); else renderProgress(); } }); if (live.done) { es.close(); es = null; } };
+}
+
+async function build(id) {
+  try { await api('/api/build', { id, ...gameOpts(S.games.find(x => x.id === id)) }); await refresh(); follow(); renderDetail(); }
+  catch (e) { alertBox(e.message); }
+}
+async function cancelBuild() { await api('/api/cancel', {}); }
+async function openIt(id, platform, what, reveal) { try { await api('/api/open', { id, platform, what, reveal }); } catch (e) { alertBox(e.message); } }
+async function importSave(id, exists) {
+  if (exists && !confirm('Une sauvegarde nxnative existe déjà. Elle sera mise de côté (dossier save.avant-…) et remplacée par l\'ancienne sauvegarde NX2Apple. Continuer ?')) return;
+  const r = await api('/api/import-save', { id }); alertBox(r.msg); refresh();
+}
+function alertBox(msg) { const d = $('#detail'); const n = document.createElement('div'); n.className = 'note warn'; n.textContent = msg; d.prepend(n); setTimeout(() => n.remove(), 8000); }
+
+let envFor = null;
+function editEnv(id) { envFor = id; $('#envText').value = S.games.find(g => g.id === id).envTxt.join('\n'); dlgEnv.showModal(); }
+$('#btnSaveEnv').onclick = async () => { await api('/api/env', { id: envFor, lines: $('#envText').value.split('\n') }); dlgEnv.close(); refresh(); };
+
+const FIELDS = [['romDir','Dossier des jeux Switch','folder'],['keys','prod.keys','file'],['outDir','Dossier des apps construites','folder'],['workDir','Dossier de travail (fichiers de build)','folder'],['oldSaveDir','Anciennes sauvegardes NX2Apple','folder'],['nxnative','Dossier nxnative (clone de seedds/nxnative)','folder'],['python','Python (3.12 ou plus, avec les modules)','file'],['language','Langue par défaut','']];
+$('#btnSettings').onclick = () => {
+  $('#settingsForm').innerHTML = FIELDS.map(([k, l, kind]) => `<div style="margin:8px 0"><div class="small muted">${l}</div><div class="row" style="margin:3px 0;flex-wrap:nowrap">${k === 'language' ? `<select id="cf_${k}">${LANGS.map(([c, n]) => `<option value="${c}" ${S.config[k] === c ? 'selected' : ''}>${n}</option>`).join('')}</select>` : `<input type="text" id="cf_${k}" value="${esc(S.config[k])}">${kind ? `<button onclick="choose('${k}','${kind}')">…</button>` : ''}`}</div></div>`).join('');
+  dlgSettings.showModal();
+};
+async function choose(k, kind) { const r = await api('/api/choose', { kind }); if (r.path) $('#cf_' + k).value = r.path; }
+$('#btnSaveSettings').onclick = async () => { const b = {}; FIELDS.forEach(([k]) => b[k] = $('#cf_' + k).value); await api('/api/config', b); dlgSettings.close(); refresh(); };
+
+$('#btnCheck').onclick = async () => {
+  const el = $('#nxupd'); el.textContent = 'Vérification…';
+  try {
+    const r = await api('/api/nx/check', {});
+    if (!r.ok) { el.textContent = 'Échec : ' + r.msg; return; }
+    if (!r.behind) { el.textContent = 'nxnative est à jour.'; return; }
+    el.innerHTML = `${r.behind} nouveauté(s) <button class="link" id="btnPull" title="${esc(r.log)}">Mettre à jour</button>`;
+    $('#btnPull').onclick = async () => {
+      el.textContent = 'Mise à jour…';
+      try { const p = await api('/api/nx/pull', {}); el.textContent = p.ok ? 'nxnative mis à jour. Reconstruis les jeux pour en profiter.' : 'Échec : ' + p.msg; refresh(); }
+      catch (e) { el.textContent = e.message; }
+    };
+  } catch (e) { el.textContent = e.message; }
+};
+
+refresh().then(() => { if (S.job.info) { sel = S.job.info.id; follow(); renderList(); renderDetail(); } });
+setInterval(() => { if (!S?.job.busy) refresh(); }, 30000);
+</script>
+</body>
+</html>
