@@ -14,7 +14,7 @@ Interface graphique simple pour [nxnative](https://github.com/seedds/nxnative) (
 
 ## Fonctionnement
 
-- `server.py` : serveur local (127.0.0.1, jeton par session) qui lance nxnative ; bibliothèque standard Python seulement.
+- `server.py` : serveur local (127.0.0.1, jeton par session) qui lance nxnative ; bibliothèque standard Python, plus pycryptodome (déjà requis par nxnative) pour lire les en-têtes NCA.
 - `index.html` : la page.
 - `App/main.swift` : la fenêtre Mac (WKWebView, interface sombre) qui démarre le serveur et le coupe en quittant ; réutilise un serveur déjà lancé (`server.json`).
 - `App/icon/make_icon.swift` : dessine l'icône (`App/AppIcon.icns`).
