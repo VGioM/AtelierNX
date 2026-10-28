@@ -23,9 +23,10 @@ DEFAULTS = {
     'romDir': '/Volumes/Lexar/Jeux/ROM/Switch',
     'keys': str(Path.home() / 'Library/Application Support/system/prod.keys'),
     'outDir': '/Volumes/Lexar/Jeux/ROM/Switch/Apps',
-    'workDir': '/Volumes/Lexar/Jeux/ROM/Switch/nxnative-build',
+    'workDir': '/Volumes/Lexar/Jeux/ROM/Switch/nxnative-build.noindex',   # « .noindex » : Spotlight n'indexe pas les milliers de fichiers de build
     'oldSaveDir': '/Volumes/Lexar/Jeux/ROM/Switch/save',
     'language': 'fr',
+    'lowPriority': '1',   # builds avec nice : ils cèdent le processeur aux autres apps
     'gameDefaults': {},   # {DM_…: valeur, 'window.show': '0'/'1'} pré-remplis à chaque nouveau build Mac
 }
 GAME_EXT = {'.nsp', '.xci', '.nsz', '.xcz'}
@@ -64,7 +65,7 @@ def git(cfg, *args, timeout=120):
 
 # ---------- bibliothèque ----------
 
-SKIP_DIRS = {'nxnative-build', 'Apps', 'save', 'log', 'Mods', 'imgs'}
+SKIP_DIRS = {'nxnative-build', 'nxnative-build.noindex', 'Apps', 'save', 'log', 'Mods', 'imgs'}
 ARCHIVE_EXT = {'.zip', '.rar', '.7z'}
 IDS_CACHE = SUPPORT / 'ids.json'
 NOISE = r'\b(EUR|Eur|USA|US|JPN|JP|NSP|XCI|XCi|xci|nsp|CLC|Multi|UPD|Update|DLC|Switch|Base)\b'
@@ -561,7 +562,7 @@ def stage_folder(cfg, game, update_ver, with_dlc):
 
 
 def safe_name(n):
-    return re.sub(r'[:/]', ' - ', n).strip() or 'jeu'
+    return re.sub(r'\s*[:/]\s*', ' - ', n).strip() or 'jeu'
 
 
 # ---------- file de construction ----------
@@ -649,7 +650,8 @@ def start_build(cfg, req):
     folder, picks = stage_folder(cfg, game, req.get('update', 'all'), req.get('dlc', True))
     Path(cfg['outDir']).mkdir(parents=True, exist_ok=True)
     out = Path(cfg['outDir']) / (safe_name(game['name']) + ('.app' if platform == 'mac-app' else '.ipa'))
-    cmd = [cfg['python'], '-u', 'scripts/build_ipa_from_nsp.py', str(folder), '-k', cfg['keys'],
+    nice = ['nice', '-n', '10'] if cfg.get('lowPriority', '1') != '0' else []
+    cmd = nice + [cfg['python'], '-u', 'scripts/build_ipa_from_nsp.py', str(folder), '-k', cfg['keys'],
            '--progress', 'json', '--platform', platform, '-l', lang, '-o', str(out)]
     if platform == 'ios' and req.get('romfsSeparate'):
         cmd += ['--romfs', 'separate']
@@ -664,7 +666,7 @@ def start_build(cfg, req):
                     'started': time.time(), 'out': str(out), 'log': str(log)}
     head = git(cfg, 'rev-parse', '--short', 'HEAD')[1]
     JOB.push({'ev': 'say', 'msg': f"Fichiers utilisés : " + ', '.join(p['name'] for p in picks)})
-    JOB.push({'ev': 'say', 'msg': f"nxnative {head} · {platform} · langue {lang}"})
+    JOB.push({'ev': 'say', 'msg': f"nxnative {head} · {platform} · langue {lang}" + (' · priorité basse' if nice else '')})
     JOB.proc = subprocess.Popen(cmd, cwd=cfg['nxnative'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, bufsize=1, env=tool_env(), start_new_session=True)
     threading.Thread(target=pump, args=(JOB.proc, log, cfg, game, platform, lang, str(out), head), daemon=True).start()
@@ -965,6 +967,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {'error': str(e)})
 
 
+def migrate_workdir(cfg):
+    """1.0.3 : dossier de build renommé « ….noindex » (Spotlight l'ignore). Même disque : renommage instantané."""
+    new = Path(cfg['workDir'])
+    old = new.with_suffix('')
+    if new.suffix == '.noindex' and not new.exists() and old.is_dir():
+        try:
+            old.rename(new)
+        except OSError:
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--port', type=int, default=0)
@@ -989,6 +1002,7 @@ def main():
     signal.signal(signal.SIGHUP, stop)
     # Permet à l'app de réutiliser un serveur déjà lancé (et son build en cours) au lieu d'en démarrer un second.
     save_json(SUPPORT / 'server.json', {'port': port, 'pid': os.getpid()})
+    migrate_workdir(config())
     threading.Thread(target=catalog_loop, daemon=True).start()
     threading.Timer(2.0, kick).start()         # reprend une file laissée non vide (sauf si elle est en pause)
     print(f'PORT {port}', flush=True)

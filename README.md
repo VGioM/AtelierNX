@@ -9,6 +9,7 @@ Interface graphique simple pour [nxnative](https://github.com/seedds/nxnative) (
 - Liste les jeux Switch de tout le dossier, sous-dossiers compris, avec leurs mises à jour et DLC où qu'ils soient rangés. L'identifiant est lu dans le fichier (ticket du NSP, en-têtes NCA d'un XCI ou d'un NSP sans ticket, déchiffrés avec `prod.keys`), sinon dans le nom (`[title ID]`). Jeux groupés « avec profil » / « sans profil », jaquettes eShop, archives `.zip` décompressables.
 - Construit une app Mac ou une IPA avec `scripts/build_ipa_from_nsp.py`, en choisissant la langue, la mise à jour et les DLC, avec la progression en direct (`--progress json`).
 - File de construction : « Construire » ajoute le jeu à la file avec ses options (langue, mise à jour, DLC, options avancées) ; les builds s'enchaînent, un échec n'arrête pas la file. Ordre modifiable, pause, historique. La file est gardée sur disque (`queue.json`) : quitter pendant un build le remet en tête, file en pause.
+- Builds en priorité basse (`nice -n 10`, réglable) : ils prennent le processeur libre sans faire ramer les autres apps.
 - Bouton « Jouer », journal du jeu, reprise des anciennes sauvegardes NX2Apple.
 - « Réglages du jeu » : les réglages de la fenêtre de lancement nxnative (liste lue dans `launcher.json`), pré-remplis via les choix enregistrés de l'app (`launcher.<VAR>`), sans les bloquer. Réglages par défaut appliqués automatiquement à chaque nouveau build Mac. `env.txt` reste accessible pour forcer un réglage.
 - Vérifie et installe les mises à jour de nxnative (`git pull`), et signale les jeux construits avec une ancienne version.
@@ -21,7 +22,7 @@ Interface graphique simple pour [nxnative](https://github.com/seedds/nxnative) (
 - `App/main.swift` : la fenêtre Mac (WKWebView, interface sombre) qui démarre le serveur et le coupe en quittant ; réutilise un serveur déjà lancé (`server.json`).
 - `App/icon/make_icon.swift` : dessine l'icône (`App/AppIcon.icns`).
 
-Le script de nxnative attend un dossier par jeu : Atelier NX crée `nxnative-build/<title ID>/` avec des liens symboliques vers les fichiers choisis. Le dossier `<title ID>_build` que nxnative y crée garde l'extraction pour les builds suivants. Les apps vont dans `Apps/`.
+Le script de nxnative attend un dossier par jeu : Atelier NX crée `nxnative-build.noindex/<title ID>/` (« .noindex » : Spotlight ignore ses milliers de fichiers) avec des liens symboliques vers les fichiers choisis. Le dossier `<title ID>_build` que nxnative y crée garde l'extraction pour les builds suivants. Les apps vont dans `Apps/`.
 
 Réglages et état : `~/Library/Application Support/AtelierNX/` (`config.json`, `state.json`, `queue.json`, `catalog.json`, icônes). La variable `ATELIERNX_SUPPORT` permet d'utiliser un autre dossier (tests).
 
