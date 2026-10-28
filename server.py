@@ -486,9 +486,16 @@ def main():
 
     def stop(*_):
         cancel_build()
+        try:
+            if load_json(SUPPORT / 'server.json', {}).get('pid') == os.getpid():
+                (SUPPORT / 'server.json').unlink()
+        except OSError:
+            pass
         os._exit(0)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGHUP, stop)
+    # Permet à l'app de réutiliser un serveur déjà lancé (et son build en cours) au lieu d'en démarrer un second.
+    save_json(SUPPORT / 'server.json', {'port': port, 'pid': os.getpid()})
     print(f'PORT {port}', flush=True)
     if a.open:
         webbrowser.open(f'http://127.0.0.1:{port}/')

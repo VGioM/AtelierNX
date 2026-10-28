@@ -35,7 +35,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/python3"
     }
 
+    /// Un serveur Atelier NX déjà lancé (par une autre fenêtre ou à la main) : on l'affiche au lieu d'en démarrer un second.
+    func runningServer() -> URL? {
+        let f = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/AtelierNX/server.json")
+        guard let data = try? Data(contentsOf: f),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let port = obj["port"] as? Int, let url = URL(string: "http://127.0.0.1:\(port)/") else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 1.5)
+        req.httpMethod = "GET"
+        let sem = DispatchSemaphore(value: 0)
+        var ok = false
+        URLSession.shared.dataTask(with: req) { d, r, _ in
+            ok = (r as? HTTPURLResponse)?.statusCode == 200 && (d.flatMap { String(data: $0, encoding: .utf8) }?.contains("Atelier NX") ?? false)
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 2)
+        return ok ? url : nil
+    }
+
     func startServer() {
+        if let url = runningServer() {
+            baseURL = url
+            web.load(URLRequest(url: url))
+            return
+        }
         guard let script = Bundle.main.path(forResource: "server", ofType: "py") else { fail("server.py manquant dans l'app."); return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: pythonPath())

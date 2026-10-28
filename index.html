@@ -291,7 +291,17 @@ $('#btnCheck').onclick = async () => {
   } catch (e) { el.textContent = e.message; }
 };
 
-refresh().then(() => { if (S.job.info) { sel = S.job.info.id; follow(); renderList(); renderDetail(); } });
+function offline(msg) {
+  $('#list').innerHTML = '';
+  $('#detail').innerHTML = `<div class="note err" style="max-width:620px">${msg}</div>`;
+  document.querySelectorAll('header button').forEach(b => b.disabled = true);
+}
+if (location.protocol === 'file:' || TOKEN.startsWith('__')) {
+  offline('Cette page ne fonctionne pas ouverte seule : elle a besoin du petit serveur qui lit tes jeux et lance nxnative.<br><br>Ouvre plutôt <b>Atelier NX</b> dans le dossier Applications.');
+  throw new Error('page ouverte sans serveur');
+}
+refresh().then(() => { if (S.job.info) { sel = S.job.info.id; follow(); renderList(); renderDetail(); } })
+  .catch(e => offline('Le serveur d\'Atelier NX ne répond pas (' + esc(e.message) + '). Quitte et relance l\'app.'));
 setInterval(() => { if (!S?.job.busy) refresh(); }, 30000);
 </script>
 </body>
