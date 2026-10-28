@@ -114,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         if buildBusy() {
             let a = NSAlert()
             a.messageText = "Un build est en cours"
-            a.informativeText = "Quitter arrête le build. Le prochain reprendra ce qui est déjà extrait."
+            a.informativeText = "Quitter arrête le build. Au prochain lancement, il sera en tête de la file, mise en pause : clique sur « Reprendre » pour continuer (ce qui est déjà extrait est réutilisé)."
             a.addButton(withTitle: "Continuer le build")
             a.addButton(withTitle: "Quitter quand même")
             if a.runModal() == .alertFirstButtonReturn { return .terminateCancel }

@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 HERE = Path(__file__).resolve().parent
-SUPPORT = Path.home() / 'Library/Application Support/AtelierNX'
+SUPPORT = Path(os.environ.get('ATELIERNX_SUPPORT') or Path.home() / 'Library/Application Support/AtelierNX')   # autre dossier : tests
 CONFIG = SUPPORT / 'config.json'
 STATE = SUPPORT / 'state.json'
 ICONS = SUPPORT / 'icons'
@@ -518,6 +518,7 @@ class Job:
         self.seq = 0
         self.result = None        # None pendant le build, puis {'ok', 'code', 'out'}
         self.cancelled = False
+        self.item = None          # élément de la file en cours de construction
 
     def busy(self):
         return self.proc is not None and self.proc.poll() is None
@@ -561,6 +562,75 @@ def stage_folder(cfg, game, update_ver, with_dlc):
 
 def safe_name(n):
     return re.sub(r'[:/]', ' - ', n).strip() or 'jeu'
+
+
+# ---------- file de construction ----------
+# Les builds s'enchaînent : « Construire » ajoute à la file (avec ses options), le suivant démarre à la fin du précédent,
+# même en cas d'échec. La file est gardée sur disque ; quitter pendant un build la remet en tête et met la file en pause.
+QUEUE_FILE = SUPPORT / 'queue.json'
+QLOCK = threading.RLock()
+OPT_KEYS = ('platform', 'language', 'update', 'dlc', 'noMotion', 'romfsSeparate', 'allowDamaged')
+
+
+def queue():
+    q = load_json(QUEUE_FILE, {})
+    return {'items': q.get('items', []), 'paused': q.get('paused', False), 'history': q.get('history', [])}
+
+
+def save_queue(q):
+    q['history'] = q['history'][-15:]
+    save_json(QUEUE_FILE, q)
+
+
+def enqueue(cfg, req):
+    games, _, _ = scan(cfg)
+    game = next((g for g in games if g['id'] == req.get('id')), None)
+    if not game:
+        raise ValueError('Jeu introuvable.')
+    if not game['hasBase']:
+        raise ValueError('Il manque le jeu de base (seulement une mise à jour ou des DLC).')
+    item = {'id': game['id'], 'name': game['name'], **{k: req.get(k) for k in OPT_KEYS}}
+    item['platform'] = item['platform'] or 'mac-app'
+    item['language'] = item['language'] or cfg['language']
+    with QLOCK:
+        q = queue()
+        same = next((i for i in q['items'] if i['id'] == item['id'] and i['platform'] == item['platform']), None)
+        if same:                                  # déjà dans la file : on met ses options à jour, sans changer sa place
+            same.update(item); pos = q['items'].index(same) + 1
+        else:
+            item['qid'] = secrets.token_hex(4); item['added'] = time.time()
+            q['items'].append(item); pos = len(q['items'])
+        save_queue(q)
+    kick()
+    return pos
+
+
+def kick():
+    """Démarre l'élément suivant si rien ne tourne et que la file n'est pas en pause."""
+    with QLOCK:
+        while not JOB.busy():
+            q = queue()
+            if q['paused'] or not q['items']:
+                return
+            item = q['items'].pop(0); save_queue(q)
+            try:
+                start_build(config(), item)
+                JOB.item = item   # sous QLOCK : finish_item (fil du build) attend que ce soit fait
+                return
+            except Exception as e:
+                q = queue()
+                q['history'].append({**item, 'ok': False, 'error': str(e), 'ended': time.time()}); save_queue(q)
+
+
+def finish_item(ok, code, cancelled):
+    with QLOCK:
+        item, JOB.item = JOB.item, None
+        if item:
+            q = queue()
+            q['history'].append({**item, 'ok': ok, 'code': code, 'cancelled': cancelled, 'ended': time.time(),
+                                 'started': (JOB.info or {}).get('started')})
+            save_queue(q)
+    threading.Timer(1.0, kick).start()   # laisse la page recevoir la fin du build avant le suivant
 
 
 def start_build(cfg, req):
@@ -630,17 +700,21 @@ def pump(proc, log, cfg, game, platform, lang, out, head):
                 'out': out, 'language': lang, 'commit': head, 'built': time.strftime('%Y-%m-%d %H:%M')}
             save_json(STATE, st)
         if platform == 'mac-app':
-            make_icon(game['id'], out)
-            n = apply_defaults(cfg, game['id'], only_missing=True)
-            if n:
-                JOB.push({'ev': 'say', 'msg': f"{n} réglage(s) par défaut pré-rempli(s) dans la fenêtre du jeu"})
-            msg = import_save(cfg, game['id'], only_if_empty=True)
-            if msg:
-                JOB.push({'ev': 'say', 'msg': msg})
+            try:   # rien ici ne doit bloquer la fin du build (et donc la file)
+                make_icon(game['id'], out)
+                n = apply_defaults(cfg, game['id'], only_missing=True)
+                if n:
+                    JOB.push({'ev': 'say', 'msg': f"{n} réglage(s) par défaut pré-rempli(s) dans la fenêtre du jeu"})
+                msg = import_save(cfg, game['id'], only_if_empty=True)
+                if msg:
+                    JOB.push({'ev': 'say', 'msg': msg})
+            except Exception as e:
+                JOB.push({'ev': 'say', 'msg': f'Après le build : {e}', 'err': True})
     lf.write(f"===== fin, code {code}\n"); lf.close()
     with JOB.cond:
         JOB.result = {'ok': ok, 'code': code, 'out': out, 'cancelled': JOB.cancelled}
     JOB.push({'ev': 'done', 'ok': ok, 'code': code, 'cancelled': JOB.cancelled})
+    finish_item(ok, code, JOB.cancelled)
 
 
 UNZIPPING = set()
@@ -743,10 +817,11 @@ class Handler(BaseHTTPRequestHandler):
                 'config': cfg, 'games': games, 'orphans': orphans, 'archives': archives, 'unzipping': sorted(UNZIPPING), 'catalog': catalog,
                 'rom': Path(cfg['romDir']).is_dir(), 'keys': Path(cfg['keys']).is_file(),
                 'nxnative': {'ok': nx_ok, 'head': head},
-                'job': {'busy': JOB.busy(), 'info': JOB.info, 'result': JOB.result},
+                'job': {'busy': JOB.busy(), 'info': JOB.info, 'result': JOB.result, 'item': JOB.item},
+                'queue': queue(),
             })
         if u.path == '/api/busy':
-            return self.send(200, {'busy': JOB.busy()})
+            return self.send(200, {'busy': JOB.busy(), 'queued': len(queue()['items'])})
         if u.path == '/api/events':
             return self.stream(int(qs.get('since', ['0'])[0]))
         return self.send(404, {'error': 'inconnu'})
@@ -781,9 +856,26 @@ class Handler(BaseHTTPRequestHandler):
         try:
             req = self.body()
             if u.path == '/api/build':
-                if JOB.busy():
-                    return self.send(409, {'error': 'Un build est déjà en cours.'})
-                start_build(cfg, req)
+                return self.send(200, {'ok': True, 'position': enqueue(cfg, req)})
+            if u.path == '/api/queue/remove':
+                with QLOCK:
+                    q = queue(); q['items'] = [i for i in q['items'] if i['qid'] != req.get('qid')]; save_queue(q)
+                return self.send(200, {'ok': True})
+            if u.path == '/api/queue/move':
+                with QLOCK:
+                    q = queue(); it = q['items']
+                    i = next((n for n, x in enumerate(it) if x['qid'] == req.get('qid')), None)
+                    j = None if i is None else max(0, min(len(it) - 1, i + int(req.get('delta', 0))))
+                    if i is not None:
+                        it.insert(j, it.pop(i)); save_queue(q)
+                return self.send(200, {'ok': True})
+            if u.path == '/api/queue/pause':
+                with QLOCK:
+                    q = queue(); q['paused'] = bool(req.get('paused')); save_queue(q)
+                kick(); return self.send(200, {'ok': True})
+            if u.path == '/api/queue/clear-history':
+                with QLOCK:
+                    q = queue(); q['history'] = []; save_queue(q)
                 return self.send(200, {'ok': True})
             if u.path == '/api/unzip':
                 unzip(cfg, req.get('path', '')); return self.send(200, {'ok': True})
@@ -883,6 +975,9 @@ def main():
     port = srv.server_address[1]
 
     def stop(*_):
+        if JOB.busy() and JOB.item:              # quitter pendant un build : il reprendra en tête de file, file en pause
+            with QLOCK:
+                q = queue(); q['items'].insert(0, JOB.item); q['paused'] = True; save_queue(q)
         cancel_build()
         try:
             if load_json(SUPPORT / 'server.json', {}).get('pid') == os.getpid():
@@ -895,6 +990,7 @@ def main():
     # Permet à l'app de réutiliser un serveur déjà lancé (et son build en cours) au lieu d'en démarrer un second.
     save_json(SUPPORT / 'server.json', {'port': port, 'pid': os.getpid()})
     threading.Thread(target=catalog_loop, daemon=True).start()
+    threading.Timer(2.0, kick).start()         # reprend une file laissée non vide (sauf si elle est en pause)
     print(f'PORT {port}', flush=True)
     if a.open:
         webbrowser.open(f'http://127.0.0.1:{port}/')

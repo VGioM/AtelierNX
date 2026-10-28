@@ -28,6 +28,16 @@ main { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; min-heigh
 .group { padding: 14px 14px 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
 .game { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .game:hover { background: var(--chip); }
+.qrow { display: flex; gap: 9px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.qrow .thumb { width: 34px; height: 34px; border-radius: 7px; font-size: 13px; }
+.qrow .t { font-weight: 600; font-size: 13px; } .qrow .s { font-size: 11.5px; color: var(--muted); }
+.qrow .acts { margin-left: auto; display: flex; gap: 2px; flex: none; }
+.qrow .acts button { border: none; background: none; color: var(--muted); padding: 2px 5px; font-size: 13px; }
+.qrow .acts button:hover { color: var(--text); }
+.qrow.cur { background: var(--chip); }
+.qbar { height: 4px; background: var(--bar); border-radius: 99px; overflow: hidden; margin-top: 4px; }
+.qbar > div { height: 100%; background: var(--accent); }
+#queueBox:not(:empty) { border-bottom: 1px solid var(--line); }
 .game.cat { padding: 7px 14px; } .game.cat .thumb { width: 34px; height: 34px; border-radius: 7px; opacity: .85; }
 .game.sel { background: var(--chip); box-shadow: inset 3px 0 0 var(--accent); }
 .thumb { width: 46px; height: 46px; border-radius: 9px; object-fit: cover; background: var(--chip); flex: none; display: grid; place-items: center; color: var(--muted); font-weight: 700; }
@@ -79,7 +89,7 @@ details summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
   <button id="btnSettings">Réglages</button>
 </header>
 <main>
-  <div id="list"></div>
+  <div id="list"><div id="queueBox"></div><div id="gamesBox"></div></div>
   <div id="detail"><div class="empty">Choisis un jeu à gauche.</div></div>
 </main>
 
@@ -178,6 +188,7 @@ function thumb(g, cls = '') { return g.icon ? `<img class="thumb ${cls}" src="${
 
 async function refresh() {
   S = await api('/api/state');
+  S.queue ||= { items: [], paused: false, history: [] };   // serveur d'une version précédente
   const [h, d] = (S.nxnative.head || '|').split('|');
   $('#nxhead').textContent = S.nxnative.ok ? `nxnative ${h} (${d})` : 'nxnative introuvable : vérifie les réglages';
   renderList();
@@ -186,7 +197,8 @@ async function refresh() {
 }
 
 function renderList() {
-  const el = $('#list');
+  renderQueue();
+  const el = $('#gamesBox');
   if (!S.rom) { el.innerHTML = `<div class="note err" style="margin:14px">Dossier des jeux introuvable :<br><code>${esc(S.config.romDir)}</code><br>Le Lexar est-il branché ?</div>`; return; }
   const item = g => {
     const chips = [];
@@ -195,6 +207,7 @@ function renderList() {
     if (g.dlc.length) chips.push(`<span class="chip">${g.dlc.length} DLC</span>`);
     for (const b of g.builds) chips.push(`<span class="chip ${b.stale ? 'warn' : 'ok'}">${PLAT[b.platform]} ✓</span>`);
     if (S.job.busy && S.job.info?.id === g.id) chips.push('<span class="chip warn">en cours…</span>');
+    else if (S.queue.items.some(i => i.id === g.id)) chips.push(`<span class="chip warn">en file (${S.queue.items.findIndex(i => i.id === g.id) + 1})</span>`);
     return `<div class="game ${sel === g.id ? 'sel' : ''}" data-id="${g.id}">${thumb(g)}<div><div class="t">${esc(g.name)}</div><div class="chips">${chips.join('')}</div></div></div>`;
   };
   const withP = S.games.filter(g => g.profile), without = S.games.filter(g => !g.profile);
@@ -225,7 +238,6 @@ function gameOpts(g) {
 function renderDetail() {
   const g = S.games.find(x => x.id === sel); if (!g) return;
   const o = gameOpts(g);
-  const running = S.job.busy || (live.done === null && es && S.job.info);
   const mine = S.job.info?.id === g.id;
   const newest = g.updates.at(-1);
   let h = `<div class="hero">${thumb(g)}<div><h2>${esc(g.name)}</h2><div class="muted small">${g.id}${g.folder ? ' · dossier « ' + esc(g.folder) + ' »' : ''}</div>
@@ -269,7 +281,10 @@ function renderDetail() {
   h += `<ul class="files">${files.map(f => `<li>${esc(f.rel)} <span>(${gb(f.size)})</span></li>`).join('')}</ul>`;
   if (g.otherBases.length) h += `<div class="note warn small">Plusieurs copies du jeu de base ; celle utilisée est la première ci-dessus. Autres : ${g.otherBases.map(b => esc(b.rel)).join(', ')}</div>`;
   h += `<p class="muted small">Premier build : 30 à 60 min. Les suivants sont bien plus rapides. Place nécessaire : environ 2 × la taille du jeu + 10 Go sur le Lexar.</p>`;
-  h += `<div class="row"><button class="primary" ${!g.hasBase || running ? 'disabled' : ''} onclick="build('${g.id}')">${running && !mine ? 'Un autre build est en cours' : 'Construire'}</button></div></div>`;
+  const inQ = S.queue.items.find(i => i.id === g.id && i.platform === o.platform);
+  const waiting = S.job.busy || S.queue.items.length;
+  const label = inQ ? 'Mettre à jour dans la file' : waiting ? `Ajouter à la file (${S.queue.items.length + 1}ᵉ)` : 'Construire';
+  h += `<div class="row"><button class="primary" ${!g.hasBase ? 'disabled' : ''} onclick="build('${g.id}')">${label}</button>${waiting && !inQ ? '<span class="muted small">démarrera tout seul après les builds en cours</span>' : ''}${inQ ? '<span class="muted small">ce jeu est déjà dans la file : ses options seront remplacées</span>' : ''}</div></div>`;
 
   // Suivi
   if (mine && (S.job.busy || live.stages.length || live.log.length)) h += `<div class="card" id="progress"></div>`;
@@ -288,7 +303,7 @@ function renderProgress() {
     const p = live.prog, f = p && p.frac != null ? p.frac : null;
     h += `<div class="bar ${f == null ? 'indet' : ''}"><div style="width:${f == null ? 0 : (f * 100).toFixed(1)}%"></div></div>`;
     if (p) h += `<div class="muted small">${f != null ? Math.round(f * 100) + ' %' : ''}${p.done != null && p.total != null ? ` · ${qty(p.done, p.unit)} / ${p.est ? '~' : ''}${qty(p.total, p.unit)}` : ''}${p.eta != null ? ` · reste ${fmtDur(p.eta)}` : ''}${p.note ? ' · ' + esc(p.note) : ''}</div>`;
-    h += `<div class="row"><button onclick="cancelBuild()">Annuler le build</button><span class="muted small">démarré il y a ${fmtDur((Date.now() / 1000) - info.started)}</span></div>`;
+    h += `<div class="row"><button onclick="cancelBuild()">Annuler ce build</button>${S.queue.items.length ? '<span class="muted small">la file passera au suivant</span>' : ''}<span class="muted small">démarré il y a ${fmtDur((Date.now() / 1000) - info.started)}</span></div>`;
   } else if (live.done.ok) {
     h += `<div class="note ok">${info.platform === 'mac-app' ? 'L\'app du jeu est prête : bouton « Jouer » plus haut.' : 'L\'IPA est prête : installe-la avec AltStore, Sideloadly ou LiveContainer (active « Increased Memory Limit » si proposé).'}<br><span class="small muted">${esc(info.out)}</span></div>`;
   } else if (!live.done.cancelled) {
@@ -307,7 +322,7 @@ function onEvent(e) {
     case 'progress': live.prog = e; if (live.cur && e.step) live.cur.step = e.step; break;
     case 'stage_end': if (live.cur) live.cur.end = { ok: e.ok, summary: e.summary, elapsed: e.elapsed }; live.prog = null; break;
     case 'say': live.log.push({ msg: e.msg, err: e.err }); break;
-    case 'done': live.done = e; setTimeout(refresh, 300); break;
+    case 'done': live.done = e; setTimeout(refresh, 300); setTimeout(refresh, 1800); break;
   }
 }
 
@@ -316,15 +331,52 @@ function follow() {
   if (es) es.close();
   live = { stages: [], cur: null, prog: null, log: [], done: null }; since = 0;
   es = new EventSource(`/api/events?since=0&token=${TOKEN}`);
-  es.onmessage = m => { onEvent(JSON.parse(m.data)); if (!raf) raf = requestAnimationFrame(() => { raf = 0; if (S.job.info?.id === sel) { if (!$('#progress')) renderDetail(); else renderProgress(); } }); if (live.done) { es.close(); es = null; } };
+  es.onmessage = m => { onEvent(JSON.parse(m.data)); if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderQueue(); if (S.job.info?.id === sel) { if (!$('#progress')) renderDetail(); else renderProgress(); } }); if (live.done) { es.close(); es = null; } };
 }
 
 async function build(id) {
-  try { await api('/api/build', { id, ...gameOpts(S.games.find(x => x.id === id)) }); await refresh(); follow(); renderDetail(); }
+  try {
+    const r = await api('/api/build', { id, ...gameOpts(S.games.find(x => x.id === id)) });
+    await refresh(); if (S.job.busy && !es) follow(); renderDetail();
+    if (S.job.info?.id !== id) alertBox(`Ajouté à la file de construction (position ${r.position}).`);
+  }
   catch (e) { alertBox(e.message); }
 }
 async function unzip(path) { await api('/api/unzip', { path }); refresh(); const t = setInterval(async () => { await refresh(); if (!S.unzipping.length) clearInterval(t); }, 3000); }
 async function refreshCatalog(b) { b.textContent = 'Actualisation…'; try { await api('/api/catalog/refresh', {}); } finally { refresh(); } }
+function itemSummary(i) {
+  const g = S.games.find(x => x.id === i.id), parts = [PLAT[i.platform], LANGNAME(i.language)];
+  if (i.update === 'none') parts.push('sans màj'); else if (i.update && i.update !== 'all') parts.push(upd(+i.update)); else if (g?.updates.length) parts.push('màj récente');
+  if (i.dlc && g?.dlc.length) parts.push(`${g.dlc.length} DLC`);
+  if (i.noMotion) parts.push('sans mouvement'); if (i.romfsSeparate) parts.push('fichiers à part'); if (i.allowDamaged) parts.push('fichiers abîmés acceptés');
+  return parts.join(' · ');
+}
+function qThumb(id) { const g = S.games.find(x => x.id === id) || { name: '?' }; return thumb(g); }
+function renderQueue() {
+  const box = $('#queueBox'); if (!box || !S) return;
+  const q = S.queue, cur = S.job.busy ? (S.job.item || S.job.info) : null;
+  if (!cur && !q.items.length && !q.history.length) { box.innerHTML = ''; return; }
+  let h = `<div class="group" style="display:flex;align-items:center">File de construction${q.items.length ? ' · ' + q.items.length + ' à suivre' : ''}<span style="margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400">${q.items.length || q.paused ? `<button class="link small" onclick="pauseQueue(${!q.paused})">${q.paused ? '▶ Reprendre' : '⏸ Pause'}</button>` : ''}</span></div>`;
+  if (q.paused) h += `<div class="note warn small" style="margin:8px 12px">File en pause : aucun nouveau build ne démarrera.${cur ? ' Le build en cours continue.' : ''}</div>`;
+  if (cur) {
+    const p = live.prog, f = p?.frac, st = live.cur;
+    h += `<div class="qrow cur" onclick="pick('${cur.id}')">${qThumb(cur.id)}<div style="flex:1;min-width:0"><div class="t">${esc(cur.name)}</div><div class="s">${st ? `[${st.k}/${st.n}] ${esc(st.name)}` : 'démarrage…'}${f != null ? ' · ' + Math.round(f * 100) + ' %' : ''}${p?.eta != null ? ' · reste ' + fmtDur(p.eta) : ''}</div><div class="qbar"><div style="width:${f != null ? (f * 100).toFixed(1) : 0}%"></div></div></div><div class="acts"><button title="Annuler ce build (la file continue)" onclick="event.stopPropagation();cancelBuild()">✕</button></div></div>`;
+  }
+  q.items.forEach((i, n) => {
+    h += `<div class="qrow" onclick="pick('${i.id}')">${qThumb(i.id)}<div style="min-width:0"><div class="t">${n + 1}. ${esc(i.name)}</div><div class="s">${esc(itemSummary(i))}</div></div><div class="acts">${n ? `<button title="Monter" onclick="event.stopPropagation();moveItem('${i.qid}',-1)">↑</button>` : ''}${n < q.items.length - 1 ? `<button title="Descendre" onclick="event.stopPropagation();moveItem('${i.qid}',1)">↓</button>` : ''}<button title="Retirer de la file" onclick="event.stopPropagation();removeItem('${i.qid}')">✕</button></div></div>`;
+  });
+  const hist = q.history.slice(-5).reverse();
+  if (hist.length) {
+    h += `<div class="muted small" style="padding:8px 14px 2px;display:flex">Terminés<button class="link small" style="margin-left:auto" onclick="clearHistory()">Effacer</button></div>`;
+    h += hist.map(i => `<div class="qrow" style="opacity:.8" onclick="pick('${i.id}')">${qThumb(i.id)}<div style="min-width:0"><div class="t"><span style="color:var(--${i.ok ? 'ok' : i.cancelled ? 'warn' : 'err'})">${i.ok ? '✓' : i.cancelled ? '–' : '✗'}</span> ${esc(i.name)}</div><div class="s">${esc(itemSummary(i))}${i.started && i.ended ? ' · ' + fmtDur(i.ended - i.started) : ''}${i.cancelled ? ' · annulé' : !i.ok ? ' · ' + esc(i.error || 'échec') : ''}</div></div></div>`).join('');
+  }
+  box.innerHTML = h;
+}
+function pick(id) { sel = id; renderList(); renderDetail(); }
+async function moveItem(qid, delta) { await api('/api/queue/move', { qid, delta }); refresh(); }
+async function removeItem(qid) { await api('/api/queue/remove', { qid }); refresh(); }
+async function pauseQueue(paused) { await api('/api/queue/pause', { paused }); refresh(); }
+async function clearHistory() { await api('/api/queue/clear-history', {}); refresh(); }
 async function cancelBuild() { await api('/api/cancel', {}); }
 async function openIt(id, platform, what, reveal) { try { await api('/api/open', { id, platform, what, reveal }); } catch (e) { alertBox(e.message); } }
 async function importSave(id, exists) {
