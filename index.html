@@ -30,6 +30,7 @@ button.primary:disabled { opacity: .45; cursor: default; }
 button.link { border: none; background: none; padding: 2px 4px; color: var(--accent); }
 main { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; min-height: calc(100vh - 56px); }
 #list { border-right: 1px solid var(--line); overflow-y: auto; max-height: calc(100vh - 56px); }
+.group { padding: 14px 14px 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
 .game { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .game:hover { background: var(--chip); }
 .game.sel { background: var(--chip); box-shadow: inset 3px 0 0 var(--accent); }
@@ -124,7 +125,7 @@ async function api(path, body) {
 }
 const gb = n => n < 1e9 ? Math.max(1, Math.round(n / 1e6)) + ' Mo' : (n / 1e9).toFixed(n > 1e10 ? 0 : 1).replace('.', ',') + ' Go';
 const qty = (n, u) => u === 'B' ? gb(n) : `${n.toLocaleString('fr-FR')} ${esc(u || '')}`;
-const upd = v => 'mise à jour n°' + Math.round(v / 65536);
+const upd = v => v == null ? 'version inconnue' : 'mise à jour n°' + Math.round(v / 65536);
 function fmtDur(s) { if (s == null) return ''; s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return h ? `${h} h ${String(m).padStart(2,'0')}` : m ? `${m} min ${String(x).padStart(2,'0')}` : `${x} s`; }
 function thumb(g, cls = '') { return g.icon ? `<img class="thumb ${cls}" src="${g.icon}" alt="">` : `<div class="thumb ${cls}">${esc(g.name[0] || '?')}</div>`; }
 
@@ -140,14 +141,25 @@ async function refresh() {
 function renderList() {
   const el = $('#list');
   if (!S.rom) { el.innerHTML = `<div class="note err" style="margin:14px">Dossier des jeux introuvable :<br><code>${esc(S.config.romDir)}</code><br>Le Lexar est-il branché ?</div>`; return; }
-  el.innerHTML = S.games.map(g => {
+  const item = g => {
     const chips = [];
-    chips.push(g.profile ? '<span class="chip ok">profil</span>' : '<span class="chip warn">sans profil</span>');
     if (!g.hasBase) chips.push('<span class="chip err">jeu de base absent</span>');
+    if (g.updates.length) chips.push(`<span class="chip">màj</span>`);
+    if (g.dlc.length) chips.push(`<span class="chip">${g.dlc.length} DLC</span>`);
     for (const b of g.builds) chips.push(`<span class="chip ${b.stale ? 'warn' : 'ok'}">${PLAT[b.platform]} ✓</span>`);
     if (S.job.busy && S.job.info?.id === g.id) chips.push('<span class="chip warn">en cours…</span>');
     return `<div class="game ${sel === g.id ? 'sel' : ''}" data-id="${g.id}">${thumb(g)}<div><div class="t">${esc(g.name)}</div><div class="chips">${chips.join('')}</div></div></div>`;
-  }).join('') + (S.orphans.length ? `<div class="note warn" style="margin:12px">${S.orphans.length} fichier(s) sans [title ID] dans le nom, ignoré(s).</div>` : '');
+  };
+  const withP = S.games.filter(g => g.profile), without = S.games.filter(g => !g.profile);
+  let h = '';
+  if (withP.length) h += `<div class="group">Avec profil · ${withP.length}</div>` + withP.map(item).join('');
+  if (without.length) h += `<div class="group">Sans profil · ${without.length}</div>` + without.map(item).join('');
+  if (S.archives.length) h += `<div class="group">Archives à décompresser · ${S.archives.length}</div>` + S.archives.map(a => {
+    const busy = S.unzipping.includes(a.path), zip = a.name.toLowerCase().endsWith('.zip');
+    return `<div class="note warn small" style="margin:8px 12px">${esc(a.rel)} <span class="muted">(${gb(a.size)})</span><br>${busy ? 'Décompression en cours…' : zip ? `<button class="link" onclick="unzip(${esc(JSON.stringify(a.path))})">Décompresser ici</button>` : 'Format non pris en charge ici : décompresse-la dans le Finder.'}</div>`;
+  }).join('');
+  if (S.orphans.length) h += `<div class="group">Non reconnus · ${S.orphans.length}</div>` + S.orphans.map(o => `<div class="note err small" style="margin:8px 12px">${esc(o.rel)}<br><span class="muted">${esc(o.why)}</span></div>`).join('');
+  el.innerHTML = h || '<div class="note" style="margin:14px">Aucun jeu trouvé dans ce dossier.</div>';
   el.querySelectorAll('.game').forEach(n => n.onclick = () => { sel = n.dataset.id; renderList(); renderDetail(); });
 }
 
@@ -162,7 +174,7 @@ function renderDetail() {
   const running = S.job.busy || (live.done === null && es && S.job.info);
   const mine = S.job.info?.id === g.id;
   const newest = g.updates.at(-1);
-  let h = `<div class="hero">${thumb(g)}<div><h2>${esc(g.name)}</h2><div class="muted small">${g.id}</div>
+  let h = `<div class="hero">${thumb(g)}<div><h2>${esc(g.name)}</h2><div class="muted small">${g.id}${g.folder ? ' · dossier « ' + esc(g.folder) + ' »' : ''}</div>
     <div class="chips" style="margin-top:6px">${g.profile ? '<span class="chip ok">profil nxnative : testé</span>' : '<span class="chip warn">pas de profil : build d\'essai, démarrage incertain</span>'}</div></div></div>`;
 
   // Apps déjà construites
@@ -200,7 +212,8 @@ function renderDetail() {
     <div class="row"><label><input type="checkbox" ${o.allowDamaged ? 'checked' : ''} onchange="setOpt('allowDamaged',this.checked)"> Continuer malgré des fichiers endommagés</label></div>
   </details>`;
   const files = [g.base, ...(o.update === 'all' ? g.updates : g.updates.filter(u => String(u.ver) === String(o.update))), ...(o.dlc ? g.dlc : [])].filter(Boolean);
-  h += `<ul class="files">${files.map(f => `<li>${esc(f.name)} <span>(${gb(f.size)})</span></li>`).join('')}</ul>`;
+  h += `<ul class="files">${files.map(f => `<li>${esc(f.rel)} <span>(${gb(f.size)})</span></li>`).join('')}</ul>`;
+  if (g.otherBases.length) h += `<div class="note warn small">Plusieurs copies du jeu de base ; celle utilisée est la première ci-dessus. Autres : ${g.otherBases.map(b => esc(b.rel)).join(', ')}</div>`;
   h += `<p class="muted small">Premier build : 30 à 60 min. Les suivants sont bien plus rapides. Place nécessaire : environ 2 × la taille du jeu + 10 Go sur le Lexar.</p>`;
   h += `<div class="row"><button class="primary" ${!g.hasBase || running ? 'disabled' : ''} onclick="build('${g.id}')">${running && !mine ? 'Un autre build est en cours' : 'Construire'}</button></div></div>`;
 
@@ -256,6 +269,7 @@ async function build(id) {
   try { await api('/api/build', { id, ...gameOpts(S.games.find(x => x.id === id)) }); await refresh(); follow(); renderDetail(); }
   catch (e) { alertBox(e.message); }
 }
+async function unzip(path) { await api('/api/unzip', { path }); refresh(); const t = setInterval(async () => { await refresh(); if (!S.unzipping.length) clearInterval(t); }, 3000); }
 async function cancelBuild() { await api('/api/cancel', {}); }
 async function openIt(id, platform, what, reveal) { try { await api('/api/open', { id, platform, what, reveal }); } catch (e) { alertBox(e.message); } }
 async function importSave(id, exists) {

@@ -4,7 +4,7 @@
 Écoute sur 127.0.0.1 uniquement ; chaque requête /api doit porter le jeton injecté dans la page.
 Lancé par Atelier NX.app (ou à la main : python3 server.py --open).
 """
-import json, os, re, secrets, shutil, signal, subprocess, sys, threading, time, argparse, webbrowser
+import json, os, re, secrets, shutil, signal, struct, subprocess, sys, threading, time, argparse, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -28,7 +28,6 @@ DEFAULTS = {
     'language': 'fr',
 }
 GAME_EXT = {'.nsp', '.xci', '.nsz', '.xcz'}
-SUBDIRS = ('', 'Updates', 'DLC')
 TOKEN = secrets.token_urlsafe(24)
 LOCK = threading.Lock()
 
@@ -64,59 +63,214 @@ def git(cfg, *args, timeout=120):
 
 # ---------- bibliothèque ----------
 
+SKIP_DIRS = {'nxnative-build', 'Apps', 'save', 'log', 'Mods', 'imgs'}
+ARCHIVE_EXT = {'.zip', '.rar', '.7z'}
+IDS_CACHE = SUPPORT / 'ids.json'
+NOISE = r'\b(EUR|Eur|USA|US|JPN|JP|NSP|XCI|XCi|xci|nsp|CLC|Multi|UPD|Update|DLC|Switch|Base)\b'
+
+
 def clean_name(fname):
     n = Path(fname).stem
-    n = re.sub(r'\[[^\]]*\]|\([^)]*\)', '', n)
-    n = re.sub(r'\s+', ' ', n).strip(' -_')
+    n = re.sub(r'\[[^\]]*\]|\([^)]*\)', ' ', n)
+    n = re.sub(r'\b[vV]\d+(\.\d+)+\b|' + NOISE, ' ', n)
+    n = re.sub(r'\s+', ' ', n).strip(' -_+')
+    n = re.sub(r'(\s-)+$', '', n).strip()
     m = re.match(r'^(.*), (The|Les?|La)( - .*)?$', n)   # « Legend of Zelda, The - X » → « The Legend of Zelda - X »
     if m:
         n = f'{m.group(2)} {m.group(1)}{m.group(3) or ""}'
     return n
 
 
+def profile_name(cfg, gid):
+    """Nom officiel du jeu, lu dans le titre du README de son profil nxnative."""
+    try:
+        first = (Path(cfg['nxnative']) / 'dm/games' / gid / 'README.md').read_text().splitlines()[0]
+        m = re.match(r'#\s+(.+?)\s+\(`', first)
+        return m.group(1) if m else None
+    except (OSError, IndexError):
+        return None
+
+
+def header_key(cfg):
+    try:
+        for line in Path(cfg['keys']).read_text().splitlines():
+            k, _, v = line.replace(' ', '').partition('=')
+            if k == 'header_key':
+                return bytes.fromhex(v)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def xts_decrypt(key, data, sector, ssize=0x200):
+    """AES-128-XTS des en-têtes NCA (numéro de secteur en gros-boutiste, comme Nintendo)."""
+    from Crypto.Cipher import AES
+    k1, k2 = AES.new(key[:16], AES.MODE_ECB), AES.new(key[16:32], AES.MODE_ECB)
+    out = bytearray()
+    for s in range(len(data) // ssize):
+        t = int.from_bytes(k2.encrypt((sector + s).to_bytes(16, 'big')), 'little')
+        blk = data[s * ssize:(s + 1) * ssize]
+        for j in range(0, ssize, 16):
+            tb = t.to_bytes(16, 'little')
+            c = bytes(x ^ y for x, y in zip(blk[j:j + 16], tb))
+            out += bytes(x ^ y for x, y in zip(k1.decrypt(c), tb))
+            t <<= 1
+            if t >> 128:
+                t = (t & ((1 << 128) - 1)) ^ 0x87
+    return bytes(out)
+
+
+def pfs0_entries(f):
+    f.seek(0); h = f.read(16)
+    n, st = struct.unpack_from('<II', h, 4)
+    ent, strs = f.read(n * 0x18), f.read(st)
+    data = 16 + n * 0x18 + st
+    out = {}
+    for i in range(n):
+        o, size, no = struct.unpack_from('<QQI', ent, i * 0x18)
+        out[strs[no:strs.index(b'\0', no)].decode(errors='replace')] = (data + o, size)
+    return out
+
+
+def nca_title_ids(f, entries, hk):
+    ids = set()
+    for name, (o, _) in entries.items():
+        if name.endswith('.nca'):
+            f.seek(o)
+            dec = xts_decrypt(hk, f.read(0x400), 0)
+            if dec[0x200:0x204] in (b'NCA3', b'NCA2'):
+                ids.add(struct.unpack_from('<Q', dec, 0x210)[0])
+    return ids
+
+
+def pick_id(ids):
+    bases = sorted(i for i in ids if i & 0xFFF == 0)
+    return bases[0] if bases else (min(ids) if ids else None)
+
+
+def hfs0(f, off):
+    f.seek(off); h = f.read(16)
+    if h[:4] != b'HFS0':
+        raise ValueError('HFS0 attendu')
+    n, st = struct.unpack_from('<II', h, 4)
+    ents, strs = f.read(0x40 * n), f.read(st)
+    data = off + 16 + 0x40 * n + st
+    out = {}
+    for i in range(n):
+        o, size, no = struct.unpack_from('<QQI', ents, i * 0x40)
+        out[strs[no:strs.index(b'\0', no)].decode(errors='replace')] = (data + o, size)
+    return out
+
+
+def xci_title_ids(f, hk):
+    f.seek(0x130); root = struct.unpack('<Q', f.read(8))[0]
+    sec = hfs0(f, root)['secure'][0]
+    return nca_title_ids(f, hfs0(f, sec), hk)
+
+
+def read_title_id(path, hk):
+    """Identifiant lu dans le fichier : ticket d'un NSP/NSZ, sinon en-têtes NCA (NSP sans ticket, XCI/XCZ) ; sinon None."""
+    with open(path, 'rb') as f:
+        h = f.read(0x104)
+        if h[:4] == b'PFS0':
+            entries = pfs0_entries(f)
+            for n in entries:
+                if re.match(r'[0-9A-Fa-f]{32}\.tik$', n):
+                    return int(n[:16], 16)
+            return pick_id(nca_title_ids(f, entries, hk)) if hk else None
+        if h[0x100:0x104] == b'HEAD' and hk:
+            return pick_id(xci_title_ids(f, hk))
+    return None
+
+
+def version_from_name(name):
+    for pat in (r'\[v(\d+)\]', r'\(v(\d+)\)', r'\[(\d{5,})\]'):
+        m = re.search(pat, name)
+        if m and int(m.group(1)) % 65536 == 0:
+            return int(m.group(1))
+    return None
+
+
+def identify(cfg, path, cache, hk):
+    st = path.stat()
+    key = f'{path}|{st.st_size}|{int(st.st_mtime)}'
+    if key in cache:
+        return cache[key]
+    tid = None
+    m = re.search(r'\[([0-9A-Fa-f]{16})\]', path.name)
+    try:
+        tid = read_title_id(path, hk)   # le ticket d'abord : l'étiquette d'un nom de fichier peut être fausse
+    except Exception:
+        pass
+    if tid is None and m:
+        tid = int(m.group(1), 16)
+    r = {'tid': f'{tid:016X}' if tid is not None else None, 'ver': version_from_name(path.name)}
+    if tid is not None:   # un échec n'est pas gardé : il sera retenté (prod.keys ajouté entre-temps, par exemple)
+        cache[key] = r
+    return r
+
+
+def walk(rom):
+    for root, dirs, files in os.walk(rom):
+        dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d not in SKIP_DIRS
+                         and not d.endswith('_build') and not d.endswith('.app'))
+        for f in sorted(files):
+            if not f.startswith('.'):
+                yield Path(root) / f
+
+
 def scan(cfg):
     rom = Path(cfg['romDir'])
-    games = {}
-    files = []
-    for sub in SUBDIRS:
-        d = rom / sub if sub else rom
-        if not d.is_dir():
+    cache = load_json(IDS_CACHE, {})
+    n0 = len(cache)
+    hk = header_key(cfg)
+    games, orphans, archives = {}, [], []
+    for f in walk(rom):
+        ext = f.suffix.lower()
+        if ext in ARCHIVE_EXT:
+            archives.append({'path': str(f), 'name': f.name, 'rel': str(f.relative_to(rom)), 'size': f.stat().st_size})
             continue
-        for f in sorted(d.iterdir()):
-            if f.name.startswith('.') or f.suffix.lower() not in GAME_EXT or not f.is_file():
-                continue
-            m = re.search(r'\[([0-9A-Fa-f]{16})\]', f.name)
-            if not m:
-                files.append({'path': str(f), 'name': f.name, 'noid': True})
-                continue
-            tid = int(m.group(1), 16)
-            v = re.search(r'\[v(\d+)\]', f.name)
-            low = tid & 0xFFF
-            if low == 0:
-                kind, base = 'base', tid
-            elif low == 0x800:
-                kind, base = 'update', tid & ~0xFFF
-            else:
-                kind, base = 'dlc', (tid & ~0xFFF) - 0x1000
-            files.append({'path': str(f), 'name': f.name, 'kind': kind, 'base': f'{base:016X}',
-                          'tid': f'{tid:016X}', 'ver': int(v.group(1)) if v else 0, 'size': f.stat().st_size})
-    for f in files:
-        if f.get('noid'):
+        if ext not in GAME_EXT or not f.is_file():
             continue
-        g = games.setdefault(f['base'], {'id': f['base'], 'base': None, 'updates': [], 'dlc': []})
-        if f['kind'] == 'base':
-            g['base'] = f
-        elif f['kind'] == 'update':
-            g['updates'].append(f)
+        size = f.stat().st_size
+        rel = str(f.relative_to(rom))
+        if size == 0:
+            orphans.append({'path': str(f), 'name': f.name, 'rel': rel, 'why': 'fichier vide'})
+            continue
+        r = identify(cfg, f, cache, hk)
+        if not r['tid']:
+            orphans.append({'path': str(f), 'name': f.name, 'rel': rel, 'why': 'identifiant illisible'})
+            continue
+        tid = int(r['tid'], 16)
+        low = tid & 0xFFF
+        if low == 0:
+            kind, base = 'base', tid
+        elif low == 0x800:
+            kind, base = 'update', tid & ~0xFFF
         else:
-            g['dlc'].append(f)
+            kind, base = 'dlc', (tid & ~0xFFF) - 0x1000
+        e = {'path': str(f), 'name': f.name, 'rel': rel, 'kind': kind, 'tid': r['tid'],
+             'ver': 0 if kind == 'base' else r['ver'], 'size': size, 'ext': ext}
+        g = games.setdefault(f'{base:016X}', {'base': None, 'bases': [], 'updates': [], 'dlc': []})
+        if kind == 'base':
+            g['bases'].append(e)
+        elif kind == 'update':
+            g['updates'].append(e)
+        else:
+            g['dlc'].append(e)
+    if len(cache) != n0:
+        save_json(IDS_CACHE, cache)
     state = load_json(STATE, {})
     profiles = Path(cfg['nxnative']) / 'dm/games'
     head = git(cfg, 'rev-parse', '--short', 'HEAD')[1] if (Path(cfg['nxnative']) / '.git').exists() else ''
     out = []
     for gid, g in games.items():
-        g['updates'].sort(key=lambda f: f['ver'])
-        name = clean_name(g['base']['name']) if g['base'] else clean_name((g['updates'] or g['dlc'])[0]['name'])
+        g['bases'].sort(key=lambda e: (e['ext'] in ('.nsz', '.xcz'), e['rel']))   # un NSP/XCI plutôt que sa version compressée
+        g['base'] = g['bases'][0] if g['bases'] else None
+        g['updates'].sort(key=lambda e: e['ver'] or 0)
+        prof = (profiles / gid).is_dir()
+        first = g['base'] or (g['updates'] + g['dlc'])[0]
+        name = (prof and profile_name(cfg, gid)) or clean_name(first['name']) or gid
         st = state.get(gid, {})
         builds = []
         for plat, b in st.get('builds', {}).items():
@@ -126,16 +280,47 @@ def scan(cfg):
         old_save = Path(cfg['oldSaveDir']) / gid
         out.append({
             'id': gid, 'name': name, 'hasBase': g['base'] is not None,
-            'base': g['base'], 'updates': g['updates'], 'dlc': g['dlc'],
-            'profile': (profiles / gid).is_dir(),
+            'base': g['base'], 'otherBases': g['bases'][1:], 'updates': g['updates'], 'dlc': g['dlc'],
+            'folder': str(Path(first['rel']).parent) if Path(first['rel']).parent != Path('.') else '',
+            'profile': prof,
             'builds': builds,
             'icon': icon_url(gid),
             'save': {'exists': save_dst.is_dir() and any(save_dst.iterdir()),
                      'old': old_save.is_dir() and any(p for p in old_save.iterdir() if not p.name.startswith('.'))},
             'envTxt': read_env_txt(gid),
         })
-    out.sort(key=lambda g: g['name'].lower())
-    return out, [f for f in files if f.get('noid')]
+    out.sort(key=lambda g: (not g['profile'], g['name'].lower()))
+    fetch_banners([g['id'] for g in out if not g['icon']])
+    return out, orphans, archives
+
+
+_banner_lock = threading.Lock()
+_banner_tried = set()
+
+
+def fetch_banners(ids):
+    """Jaquettes manquantes : image eShop listée dans l'index de NX2Apple (téléchargée une fois, en arrière-plan)."""
+    todo = [i for i in ids if i not in _banner_tried]
+    if not todo:
+        return
+    _banner_tried.update(todo)
+    idx = load_json(ARTWORK / 'index.json', {}).get('banners', {})
+
+    def run():
+        import urllib.request
+        with _banner_lock:
+            for gid in todo:
+                url = idx.get(gid)
+                if not url or urlparse(url).hostname != 'img-eshop.cdn.nintendo.net':
+                    continue
+                try:
+                    with urllib.request.urlopen(url, timeout=20) as r:
+                        data = r.read(5_000_000)
+                    ICONS.mkdir(parents=True, exist_ok=True)
+                    (ICONS / f'{gid}.jpg').write_bytes(data)
+                except Exception:
+                    pass
+    threading.Thread(target=run, daemon=True).start()
 
 
 def read_env_txt(gid):
@@ -149,6 +334,8 @@ def read_env_txt(gid):
 def icon_url(gid):
     if (ICONS / f'{gid}.png').exists():
         return f'/icon/{gid}.png'
+    if (ICONS / f'{gid}.jpg').exists():
+        return f'/icon/{gid}.jpg'
     if (ARTWORK / f'{gid}.jpg').exists():
         return f'/art/{gid}.jpg'
     return None
@@ -206,8 +393,11 @@ def stage_folder(cfg, game, update_ver, with_dlc):
         picks += [u for u in ups if str(u['ver']) == str(update_ver)]
     if with_dlc:
         picks += game['dlc']
-    for f in picks:
-        (d / f['name']).symlink_to(f['path'])
+    # Noms normalisés « [title ID][vN] » : nxnative reconnaît les mises à jour à cette étiquette, et les fichiers
+    # d'origine (rangés n'importe où, nommés n'importe comment) restent intacts.
+    for i, f in enumerate(picks):
+        tag = f"[{f['tid']}]" + (f"[v{f['ver']}]" if f['ver'] is not None else '')
+        (d / f"{f['kind']}{i:02d} {tag}{f['ext']}").symlink_to(f['path'])
     return d, picks
 
 
@@ -216,7 +406,7 @@ def safe_name(n):
 
 
 def start_build(cfg, req):
-    games, _ = scan(cfg)
+    games, _, _ = scan(cfg)
     game = next((g for g in games if g['id'] == req.get('id')), None)
     if not game:
         raise ValueError('Jeu introuvable.')
@@ -292,6 +482,26 @@ def pump(proc, log, cfg, game, platform, lang, out, head):
     JOB.push({'ev': 'done', 'ok': ok, 'code': code, 'cancelled': JOB.cancelled})
 
 
+UNZIPPING = set()
+
+
+def unzip(cfg, path):
+    p = Path(path).resolve()
+    rom = Path(cfg['romDir']).resolve()
+    if rom not in p.parents or p.suffix.lower() != '.zip' or not p.is_file():
+        raise ValueError('Archive refusée.')
+    if str(p) in UNZIPPING:
+        return
+
+    def run():
+        UNZIPPING.add(str(p))
+        try:
+            subprocess.run(['ditto', '-x', '-k', str(p), str(p.parent)], capture_output=True)
+        finally:
+            UNZIPPING.discard(str(p))
+    threading.Thread(target=run, daemon=True).start()
+
+
 def cancel_build():
     if JOB.busy():
         JOB.cancelled = True
@@ -356,7 +566,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, html.encode(), 'text/html; charset=utf-8')
         m = re.fullmatch(r'/(icon|art)/([0-9A-F]{16})\.(png|jpg)', u.path)
         if m:
-            p = (ICONS / f'{m.group(2)}.png') if m.group(1) == 'icon' else (ARTWORK / f'{m.group(2)}.jpg')
+            p = (ICONS if m.group(1) == 'icon' else ARTWORK) / f'{m.group(2)}.{m.group(3)}'
             if p.exists():
                 return self.send(200, p.read_bytes(), 'image/png' if m.group(3) == 'png' else 'image/jpeg')
             return self.send(404, {})
@@ -364,11 +574,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {'error': 'jeton invalide'})
         cfg = config()
         if u.path == '/api/state':
-            games, orphans = scan(cfg)
+            games, orphans, archives = scan(cfg)
             nx_ok = (Path(cfg['nxnative']) / 'scripts/build_ipa_from_nsp.py').exists()
             head = git(cfg, 'log', '-1', '--format=%h|%cd', '--date=format:%d/%m %H:%M')[1] if nx_ok else ''
             return self.send(200, {
-                'config': cfg, 'games': games, 'orphans': orphans,
+                'config': cfg, 'games': games, 'orphans': orphans, 'archives': archives, 'unzipping': sorted(UNZIPPING),
                 'rom': Path(cfg['romDir']).is_dir(), 'keys': Path(cfg['keys']).is_file(),
                 'nxnative': {'ok': nx_ok, 'head': head},
                 'job': {'busy': JOB.busy(), 'info': JOB.info, 'result': JOB.result},
@@ -413,6 +623,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(409, {'error': 'Un build est déjà en cours.'})
                 start_build(cfg, req)
                 return self.send(200, {'ok': True})
+            if u.path == '/api/unzip':
+                unzip(cfg, req.get('path', '')); return self.send(200, {'ok': True})
             if u.path == '/api/cancel':
                 cancel_build(); return self.send(200, {'ok': True})
             if u.path == '/api/config':
