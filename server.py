@@ -4,7 +4,7 @@
 Écoute sur 127.0.0.1 uniquement ; chaque requête /api doit porter le jeton injecté dans la page.
 Lancé par Atelier NX.app (ou à la main : python3 server.py --open).
 """
-import json, os, re, secrets, shutil, signal, struct, subprocess, sys, threading, time, argparse, webbrowser
+import json, os, plistlib, re, secrets, shutil, signal, struct, subprocess, sys, threading, time, argparse, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -26,6 +26,7 @@ DEFAULTS = {
     'workDir': '/Volumes/Lexar/Jeux/ROM/Switch/nxnative-build',
     'oldSaveDir': '/Volumes/Lexar/Jeux/ROM/Switch/save',
     'language': 'fr',
+    'gameDefaults': {},   # {DM_…: valeur, 'window.show': '0'/'1'} pré-remplis à chaque nouveau build Mac
 }
 GAME_EXT = {'.nsp', '.xci', '.nsz', '.xcz'}
 TOKEN = secrets.token_urlsafe(24)
@@ -349,6 +350,92 @@ def make_icon(gid, app):
                        capture_output=True)
 
 
+# ---------- réglages des apps Mac (choix enregistrés, lus par la fenêtre du jeu) ----------
+# La fenêtre de réglages d'une app nxnative garde les choix dans les préférences de l'app (domaine = son bundle ID),
+# clés « launcher.<VAR> » (chaînes) et « window.show » (booléen). Les écrire ici pré-remplit la fenêtre sans rien bloquer,
+# contrairement à env.txt, qui l'emporte et grise le réglage (docs/frontends.md, Saved choices).
+
+def mac_app(gid):
+    b = load_json(STATE, {}).get(gid, {}).get('builds', {}).get('mac-app')
+    return Path(b['out']) if b and Path(b['out']).exists() else None
+
+
+def app_settings(app):
+    info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    lj = load_json(app / 'Contents/Resources/dm/launcher.json', {})
+    return info.get('CFBundleIdentifier'), lj.get('settings', [])
+
+
+def read_prefs(bid):
+    r = subprocess.run(['defaults', 'export', bid, '-'], capture_output=True)
+    try:
+        return plistlib.loads(r.stdout) if r.returncode == 0 else {}
+    except Exception:
+        return {}
+
+
+def valid_value(setting, v):
+    k = setting.get('kind')
+    if k == 'choice':
+        return v in [o[0] for o in setting.get('options', [])]
+    if k == 'toggle':
+        return v in (setting.get('on'), setting.get('off'))
+    if k == 'range':
+        try:
+            return setting['min'] - 1e-9 <= float(v) <= setting['max'] + 1e-9
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def write_prefs(bid, settings, values, show=None):
+    """values : {VAR: valeur ou None}. Une valeur égale au défaut testé est retirée, comme le fait la fenêtre du jeu."""
+    by = {s['env']: s for s in settings}
+    for env, v in values.items():
+        st = by.get(env)
+        if not st:
+            continue
+        if v is None or str(v) == str(st.get('default')) or not valid_value(st, str(v)):
+            subprocess.run(['defaults', 'delete', bid, f'launcher.{env}'], capture_output=True)
+        else:
+            subprocess.run(['defaults', 'write', bid, f'launcher.{env}', '-string', str(v)], capture_output=True)
+    if show is not None:
+        subprocess.run(['defaults', 'write', bid, 'window.show', '-bool', 'true' if show else 'false'], capture_output=True)
+
+
+def game_prefs(gid):
+    app = mac_app(gid)
+    if not app:
+        raise ValueError("Construis d'abord l'app Mac de ce jeu.")
+    bid, settings = app_settings(app)
+    prefs = read_prefs(bid)
+    env = dict(l.split('=', 1) for l in read_env_txt(gid) if '=' in l)
+    return {'bundleId': bid, 'show': prefs.get('window.show', True) is not False,
+            'settings': [{**s, 'current': prefs.get(f"launcher.{s['env']}"), 'locked': env.get(s['env'])} for s in settings]}
+
+
+def apply_defaults(cfg, gid, only_missing):
+    """Réglages par défaut de l'atelier → choix enregistrés du jeu (seulement ceux que ce jeu propose)."""
+    app = mac_app(gid)
+    if not app:
+        return 0
+    bid, settings = app_settings(app)
+    prefs = read_prefs(bid)
+    d = cfg.get('gameDefaults') or {}
+    vals = {}
+    for st in settings:
+        v = d.get(st['env'])
+        if v in (None, '') or (only_missing and f"launcher.{st['env']}" in prefs):
+            continue
+        if valid_value(st, str(v)):
+            vals[st['env']] = str(v)
+    show = None
+    if d.get('window.show') in ('0', '1') and not (only_missing and 'window.show' in prefs):
+        show = d['window.show'] == '1'
+    write_prefs(bid, settings, vals, show)
+    return len(vals) + (show is not None)
+
+
 # ---------- builds ----------
 
 class Job:
@@ -473,6 +560,9 @@ def pump(proc, log, cfg, game, platform, lang, out, head):
             save_json(STATE, st)
         if platform == 'mac-app':
             make_icon(game['id'], out)
+            n = apply_defaults(cfg, game['id'], only_missing=True)
+            if n:
+                JOB.push({'ev': 'say', 'msg': f"{n} réglage(s) par défaut pré-rempli(s) dans la fenêtre du jeu"})
             msg = import_save(cfg, game['id'], only_if_empty=True)
             if msg:
                 JOB.push({'ev': 'say', 'msg': msg})
@@ -632,6 +722,9 @@ class Handler(BaseHTTPRequestHandler):
                 for k in DEFAULTS:
                     if k in req and isinstance(req[k], str):
                         cur[k] = req[k].strip()
+                if isinstance(req.get('gameDefaults'), dict):
+                    cur['gameDefaults'] = {k: str(v) for k, v in req['gameDefaults'].items()
+                                           if re.fullmatch(r'DM_[A-Z0-9_]+|window\.show', k) and v not in (None, '')}
                 save_json(CONFIG, cur); return self.send(200, {'ok': True})
             if u.path == '/api/choose':
                 kind = req.get('kind', 'folder')
@@ -661,6 +754,18 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == '/api/import-save':
                 msg = import_save(cfg, req['id'], only_if_empty=False)
                 return self.send(200, {'ok': True, 'msg': msg or 'Aucune ancienne sauvegarde.'})
+            if u.path == '/api/prefs/get':
+                return self.send(200, game_prefs(req['id']))
+            if u.path == '/api/prefs/set':
+                app = mac_app(req['id'])
+                if not app:
+                    return self.send(404, {'error': 'App introuvable.'})
+                bid, settings = app_settings(app)
+                write_prefs(bid, settings, req.get('values', {}), req.get('show'))
+                return self.send(200, {'ok': True})
+            if u.path == '/api/prefs/defaults':
+                n = apply_defaults(cfg, req['id'], only_missing=False)
+                return self.send(200, {'ok': True, 'n': n})
             if u.path == '/api/env':
                 gid = req['id']
                 p = NX_SUPPORT / gid / 'env.txt'

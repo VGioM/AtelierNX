@@ -96,9 +96,19 @@ details summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
   </div>
 </dialog>
 
+<dialog id="dlgPrefs">
+  <h3 style="margin-top:0" id="prefsTitle">Réglages du jeu</h3>
+  <p class="muted small">Ces réglages sont <b>pré-remplis</b> dans la fenêtre qui s'ouvre avant le jeu : tu peux toujours les changer là-bas, et ce que tu y choisis apparaît ici. « Par défaut » = le réglage testé par nxnative pour ce jeu.</p>
+  <div id="prefsForm"></div>
+  <div class="row" style="justify-content:space-between;margin-top:14px">
+    <span><button id="btnApplyDefaults">Appliquer mes réglages par défaut</button> <button class="link" onclick="dlgPrefs.close();editEnv(prefsFor)">Avancé : env.txt…</button></span>
+    <span><button onclick="dlgPrefs.close()">Annuler</button> <button class="primary" id="btnSavePrefs">Enregistrer</button></span>
+  </div>
+</dialog>
+
 <dialog id="dlgEnv">
   <h3 style="margin-top:0">Réglages forcés (env.txt)</h3>
-  <p class="muted small">Une ligne <code>NOM=valeur</code> par réglage. Ces lignes l'emportent sur la fenêtre de réglages du jeu, qui les affiche alors grisées. Laisse vide pour tout régler depuis la fenêtre du jeu.<br>
+  <p class="muted small"><b>Bloque</b> les réglages : ils l'emportent sur la fenêtre du jeu, qui les affiche grisés. Pour simplement pré-remplir, utilise plutôt « Réglages du jeu ». Une ligne <code>NOM=valeur</code> par réglage. Ces lignes l'emportent sur la fenêtre de réglages du jeu, qui les affiche alors grisées. Laisse vide pour tout régler depuis la fenêtre du jeu.<br>
   Exemples : <code>DM_FULLSCREEN=1</code>, <code>DM_FPS_TARGET=60</code>, <code>DM_OPMODE=1</code> (mode TV), <code>DM_LAUNCHER=0</code> (sans fenêtre de réglages).</p>
   <textarea id="envText" spellcheck="false"></textarea>
   <div class="row" style="justify-content:flex-end;margin-top:12px">
@@ -110,6 +120,47 @@ details summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
 <script>
 const TOKEN = '__TOKEN__';
 const LANGS = [['fr','Français'],['fr-CA','Français (Canada)'],['en-US','English (US)'],['en-GB','English (UK)'],['es','Español'],['es-419','Español (Latinoamérica)'],['de','Deutsch'],['it','Italiano'],['nl','Nederlands'],['pt','Português'],['pt-BR','Português (Brasil)'],['ru','Русский'],['ja','日本語'],['ko','한국어'],['zh-Hans','中文（简体）'],['zh-Hant','中文（繁體）']];
+const FR = {
+  DM_FPS_TARGET: ['Fréquence d\'images', {'30': '30 i/s', '60': '60 i/s'}],
+  DM_RENDER_SCALE: ['Résolution de rendu'],
+  DM_OPMODE: ['Mode console', {'1': 'TV (docké)', '0': 'Portable'}],
+  DM_PRESENT_UPSCALE: ['Mise à l\'échelle', {off: 'Standard', metalfx: 'MetalFX'}],
+  DM_LANG: ['Langue du jeu'],
+  DM_FULLSCREEN: ['Affichage', {'0': 'Fenêtre', '1': 'Plein écran'}],
+  DM_RUMBLE: ['Vibrations'], DM_RUMBLE_GAIN: ['Force des vibrations'], DM_RUMBLE_MIN: ['Seuil des vibrations'],
+  DM_PRESENT_SNAP: ['Tampon d\'image supplémentaire'], DM_PSO_MTL4: ['Pipelines Metal 4'], DM_PSO_PREBUILD: ['Préparation des pipelines'],
+  DM_NVN_ENC_THREAD: ['Fil d\'encodage séparé'], DM_METAL_HUD: ['Compteur de performances'], DM_FPS_HOLD: ['Garder les images en retard', {on: 'Oui', off: 'Non'}],
+};
+const NOTE_FR = {
+  'Uses more GPU time and can increase heat.': 'Sollicite davantage la puce graphique et peut faire chauffer.',
+  'Up to one frame more display latency.': 'Jusqu\'à une image de latence en plus.',
+  'Keeps a pipeline archive; uses more memory.': 'Garde une archive de pipelines ; utilise plus de mémoire.',
+  'The first start waits a few minutes for it, once.': 'Le premier lancement attend quelques minutes, une seule fois.',
+};
+const SECTION = { Game: 'Jeu', Controls: 'Commandes', Performance: 'Performances', Display: 'Affichage' };
+const GLOBAL_DEFAULTS = [
+  ['DM_FPS_TARGET', [['30', '30 i/s'], ['60', '60 i/s']], 'seulement les jeux qui le proposent'],
+  ['DM_FULLSCREEN', [['0', 'Fenêtre'], ['1', 'Plein écran']]],
+  ['DM_OPMODE', [['1', 'TV (docké)'], ['0', 'Portable']]],
+  ['DM_PRESENT_UPSCALE', [['off', 'Standard'], ['metalfx', 'MetalFX']]],
+  ['DM_RUMBLE', [['1', 'Oui'], ['0', 'Non']]],
+  ['DM_METAL_HUD', [['0', 'Non'], ['1', 'Oui']]],
+  ['window.show', [['1', 'Oui'], ['0', 'Non (⌥ au lancement pour la revoir)']], '', 'Fenêtre de réglages au lancement'],
+];
+const LANGNAME = c => (LANGS.find(l => l[0] === c) || [c, c])[1];
+function optLabel(st, v) {
+  const fr = FR[st.env]?.[1]?.[v]; if (fr) return fr;
+  if (st.env === 'DM_LANG') return LANGNAME(v);
+  if (st.kind === 'toggle') return v === st.on ? 'Oui' : 'Non';
+  const o = (st.options || []).find(o => o[0] === v); return o ? o[1] : v;
+}
+function choicesOf(st) {
+  if (st.kind === 'choice') return st.options.map(o => o[0]);
+  if (st.kind === 'toggle') return [st.on, st.off];
+  const out = [], n = Math.round((st.max - st.min) / (st.step || 0.1));
+  for (let i = 0; i <= n; i++) out.push(String(+(st.min + i * (st.step || 0.1)).toFixed(2)));
+  return out;
+}
 const PLAT = {'mac-app': 'Mac', 'ios': 'iPhone / iPad'};
 let S = null, sel = null, opts = {}, since = 0, es = null;
 let live = { stages: [], cur: null, prog: null, log: [], done: null };
@@ -186,11 +237,11 @@ function renderDetail() {
       h += `<div class="row">`;
       if (b.platform === 'mac-app') h += `<button class="primary" onclick="openIt('${g.id}','mac-app')">▶ Jouer</button>`;
       h += `<button onclick="openIt('${g.id}','${b.platform}',null,true)">Afficher dans le Finder</button>`;
-      if (b.platform === 'mac-app') h += `<button onclick="openIt('${g.id}','mac-app','log')">Journal du jeu</button><button onclick="editEnv('${g.id}')">Réglages forcés…</button>`;
+      if (b.platform === 'mac-app') h += `<button onclick="editPrefs('${g.id}')">Réglages du jeu…</button><button onclick="openIt('${g.id}','mac-app','log')">Journal du jeu</button>`;
       h += `</div>`;
     }
     if (g.builds.some(b => b.platform === 'mac-app')) {
-      h += `<p class="muted small">La fenêtre qui s'ouvre avant le jeu permet de changer la langue, la fréquence d'images, le plein écran… Maintiens ⌥ (Option) au lancement pour la revoir si tu l'as masquée.</p>`;
+      h += `<p class="muted small">Une fenêtre de réglages s'ouvre avant le jeu (langue, plein écran…) et retient tes choix. Tu peux la masquer (case « Show this window at launch », ou ici dans « Réglages du jeu ») ; maintiens ⌥ (Option) au lancement pour la revoir.</p>`;
       if (g.envTxt.length) h += `<div class="note warn small">Réglages forcés dans env.txt (grisés dans la fenêtre du jeu) : <code>${esc(g.envTxt.join('  '))}</code> <button class="link" onclick="editEnv('${g.id}')">modifier</button></div>`;
       if (g.save.old) h += `<div class="row small"><span class="muted">${g.save.exists ? 'Sauvegarde nxnative présente.' : 'Pas encore de sauvegarde nxnative.'} Une ancienne sauvegarde NX2Apple existe.</span><button class="link" onclick="importSave('${g.id}', ${g.save.exists})">Reprendre l'ancienne sauvegarde</button><button class="link" onclick="openIt('${g.id}','mac-app','data')">Dossier de données</button></div>`;
     }
@@ -278,6 +329,34 @@ async function importSave(id, exists) {
 }
 function alertBox(msg) { const d = $('#detail'); const n = document.createElement('div'); n.className = 'note warn'; n.textContent = msg; d.prepend(n); setTimeout(() => n.remove(), 8000); }
 
+let prefsFor = null, prefsData = null;
+async function editPrefs(id) {
+  prefsFor = id;
+  try { prefsData = await api('/api/prefs/get', { id }); } catch (e) { return alertBox(e.message); }
+  const g = S.games.find(x => x.id === id);
+  $('#prefsTitle').textContent = 'Réglages du jeu · ' + g.name;
+  let h = `<div class="row"><label class="k">Fenêtre au lancement</label><select id="pf_show"><option value="1" ${prefsData.show ? 'selected' : ''}>Afficher</option><option value="0" ${prefsData.show ? '' : 'selected'}>Ne pas afficher (⌥ pour la revoir)</option></select></div>`;
+  let sec = null;
+  for (const st of prefsData.settings) {
+    if (st.section !== sec) { sec = st.section; h += `<div class="group" style="padding:12px 0 4px;border:none">${esc(SECTION[sec] || sec)}</div>`; }
+    const label = FR[st.env]?.[0] || st.label;
+    const def = `Par défaut (${esc(optLabel(st, String(st.default)))})`;
+    const ctl = st.locked != null
+      ? `<span class="muted small">bloqué par env.txt : ${esc(optLabel(st, st.locked))}</span>`
+      : `<select data-env="${st.env}"><option value="">${def}</option>${choicesOf(st).filter(v => v !== String(st.default)).map(v => `<option value="${esc(v)}" ${st.current === v ? 'selected' : ''}>${esc(optLabel(st, v))}</option>`).join('')}</select>`;
+    h += `<div class="row"><label class="k" title="${esc(st.env)}">${esc(label)}</label>${ctl}${st.note ? `<span class="muted small">${esc(NOTE_FR[st.note] || st.note)}</span>` : ''}</div>`;
+  }
+  $('#prefsForm').innerHTML = h;
+  dlgPrefs.showModal();
+}
+$('#btnSavePrefs').onclick = async () => {
+  const values = {};
+  document.querySelectorAll('#prefsForm select[data-env]').forEach(sel => values[sel.dataset.env] = sel.value || null);
+  await api('/api/prefs/set', { id: prefsFor, values, show: $('#pf_show').value === '1' });
+  dlgPrefs.close();
+};
+$('#btnApplyDefaults').onclick = async () => { const r = await api('/api/prefs/defaults', { id: prefsFor }); dlgPrefs.close(); if (!r.n) alertBox('Aucun réglage par défaut ne s\'applique à ce jeu (voir Réglages en haut à droite).'); editPrefs(prefsFor); };
+
 let envFor = null;
 function editEnv(id) { envFor = id; $('#envText').value = S.games.find(g => g.id === id).envTxt.join('\n'); dlgEnv.showModal(); }
 $('#btnSaveEnv').onclick = async () => { await api('/api/env', { id: envFor, lines: $('#envText').value.split('\n') }); dlgEnv.close(); refresh(); };
@@ -285,10 +364,14 @@ $('#btnSaveEnv').onclick = async () => { await api('/api/env', { id: envFor, lin
 const FIELDS = [['romDir','Dossier des jeux Switch','folder'],['keys','prod.keys','file'],['outDir','Dossier des apps construites','folder'],['workDir','Dossier de travail (fichiers de build)','folder'],['oldSaveDir','Anciennes sauvegardes NX2Apple','folder'],['nxnative','Dossier nxnative (clone de seedds/nxnative)','folder'],['python','Python (3.12 ou plus, avec les modules)','file'],['language','Langue par défaut','']];
 $('#btnSettings').onclick = () => {
   $('#settingsForm').innerHTML = FIELDS.map(([k, l, kind]) => `<div style="margin:8px 0"><div class="small muted">${l}</div><div class="row" style="margin:3px 0;flex-wrap:nowrap">${k === 'language' ? `<select id="cf_${k}">${LANGS.map(([c, n]) => `<option value="${c}" ${S.config[k] === c ? 'selected' : ''}>${n}</option>`).join('')}</select>` : `<input type="text" id="cf_${k}" value="${esc(S.config[k])}">${kind ? `<button onclick="choose('${k}','${kind}')">…</button>` : ''}`}</div></div>`).join('');
+  const d = S.config.gameDefaults || {};
+  $('#settingsForm').innerHTML += `<h3 style="margin:18px 0 4px">Réglages par défaut des jeux</h3><p class="muted small" style="margin-top:0">Pré-remplis dans la fenêtre de chaque jeu au moment où tu le construis pour Mac (modifiables ensuite dans le jeu). Pour un jeu déjà construit : « Réglages du jeu… » → « Appliquer mes réglages par défaut ».</p>`
+    + GLOBAL_DEFAULTS.map(([k, opts, note, label]) => `<div class="row"><label class="k">${esc(label || FR[k][0])}</label><select id="gd_${k.replace('.', '_')}"><option value="">Défaut du jeu</option>${opts.map(([v, l]) => `<option value="${v}" ${d[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select>${note ? `<span class="muted small">${note}</span>` : ''}</div>`).join('');
   dlgSettings.showModal();
 };
 async function choose(k, kind) { const r = await api('/api/choose', { kind }); if (r.path) $('#cf_' + k).value = r.path; }
-$('#btnSaveSettings').onclick = async () => { const b = {}; FIELDS.forEach(([k]) => b[k] = $('#cf_' + k).value); await api('/api/config', b); dlgSettings.close(); refresh(); };
+$('#btnSaveSettings').onclick = async () => { const b = { gameDefaults: {} }; FIELDS.forEach(([k]) => b[k] = $('#cf_' + k).value);
+  GLOBAL_DEFAULTS.forEach(([k]) => { const v = $('#gd_' + k.replace('.', '_')).value; if (v) b.gameDefaults[k] = v; }); await api('/api/config', b); dlgSettings.close(); refresh(); };
 
 $('#btnCheck').onclick = async () => {
   const el = $('#nxupd'); el.textContent = 'Vérification…';
