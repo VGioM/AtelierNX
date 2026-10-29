@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         if let data = try? Data(contentsOf: support),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let p = obj["python"] as? String, FileManager.default.isExecutableFile(atPath: p) { return p }
-        let candidates = [NSHomeDirectory() + "/Downloads/Archive/nxnative-venv/bin/python",
+        let candidates = [NSHomeDirectory() + "/nxnative/.venv/bin/python",
                           "/opt/homebrew/bin/python3.14", "/opt/homebrew/bin/python3.13", "/opt/homebrew/bin/python3"]
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/python3"
     }

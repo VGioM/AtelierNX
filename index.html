@@ -199,7 +199,9 @@ async function refresh() {
 function renderList() {
   renderQueue();
   const el = $('#gamesBox');
-  if (!S.rom) { el.innerHTML = `<div class="note err" style="margin:14px">Dossier des jeux introuvable :<br><code>${esc(S.config.romDir)}</code><br>Le Lexar est-il branché ?</div>`; return; }
+  if (!S.rom) { el.innerHTML = S.config.romDir
+      ? `<div class="note err" style="margin:14px">Dossier des jeux introuvable :<br><code>${esc(S.config.romDir)}</code><br>Le disque est-il branché ?</div>`
+      : `<div class="note" style="margin:14px">Choisis le dossier de tes jeux Switch (et <code>prod.keys</code>) dans Réglages.</div>`; return; }
   const item = g => {
     const chips = [];
     if (!g.hasBase) chips.push('<span class="chip err">jeu de base absent</span>');
@@ -280,7 +282,7 @@ function renderDetail() {
   const files = [g.base, ...(o.update === 'all' ? g.updates : g.updates.filter(u => String(u.ver) === String(o.update))), ...(o.dlc ? g.dlc : [])].filter(Boolean);
   h += `<ul class="files">${files.map(f => `<li>${esc(f.rel)} <span>(${gb(f.size)})</span></li>`).join('')}</ul>`;
   if (g.otherBases.length) h += `<div class="note warn small">Plusieurs copies du jeu de base ; celle utilisée est la première ci-dessus. Autres : ${g.otherBases.map(b => esc(b.rel)).join(', ')}</div>`;
-  h += `<p class="muted small">Premier build : 30 à 60 min. Les suivants sont bien plus rapides. Place nécessaire : environ 2 × la taille du jeu + 10 Go sur le Lexar.</p>`;
+  h += `<p class="muted small">Premier build : 30 à 60 min. Les suivants sont bien plus rapides. Place nécessaire : environ 2 × la taille du jeu + 10 Go sur le disque du dossier de travail.</p>`;
   const inQ = S.queue.items.find(i => i.id === g.id && i.platform === o.platform);
   const waiting = S.job.busy || S.queue.items.length;
   const label = inQ ? 'Mettre à jour dans la file' : waiting ? `Ajouter à la file (${S.queue.items.length + 1}ᵉ)` : 'Construire';

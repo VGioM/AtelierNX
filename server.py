@@ -17,14 +17,16 @@ ICONS = SUPPORT / 'icons'
 ARTWORK = Path.home() / 'Library/Application Support/NS Port Builder/artwork'
 NX_SUPPORT = Path.home() / 'Library/Application Support/nxnative'
 
+# Chemins vides = à choisir dans Réglages ; les dossiers d'apps, de build et d'anciennes sauvegardes
+# sont alors pris dans le dossier des jeux (voir config()).
 DEFAULTS = {
-    'nxnative': str(Path.home() / 'Downloads/Archive/nxnative'),
-    'python': str(Path.home() / 'Downloads/Archive/nxnative-venv/bin/python'),
-    'romDir': '/Volumes/Lexar/Jeux/ROM/Switch',
-    'keys': str(Path.home() / 'Library/Application Support/system/prod.keys'),
-    'outDir': '/Volumes/Lexar/Jeux/ROM/Switch/Apps',
-    'workDir': '/Volumes/Lexar/Jeux/ROM/Switch/nxnative-build.noindex',   # « .noindex » : Spotlight n'indexe pas les milliers de fichiers de build
-    'oldSaveDir': '/Volumes/Lexar/Jeux/ROM/Switch/save',
+    'nxnative': str(Path.home() / 'nxnative'),
+    'python': '',
+    'romDir': '',
+    'keys': str(Path.home() / '.switch/prod.keys'),
+    'outDir': '',
+    'workDir': '',   # vide = <jeux>/nxnative-build.noindex (« .noindex » : Spotlight n'indexe pas les milliers de fichiers de build)
+    'oldSaveDir': '',
     'language': 'fr',
     'lowPriority': '1',   # builds avec nice : ils cèdent le processeur aux autres apps
     'gameDefaults': {},   # {DM_…: valeur, 'window.show': '0'/'1'} pré-remplis à chaque nouveau build Mac
@@ -46,8 +48,23 @@ def save_json(p, data):
     tmp = p.with_suffix('.tmp'); tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False)); tmp.replace(p)
 
 
+def find_python(nxnative):
+    """Premier Python 3.12+ trouvé : venv du clone nxnative, puis Homebrew, python.org, /usr/local."""
+    cands = [Path(nxnative) / '.venv/bin/python', Path(nxnative) / 'venv/bin/python']
+    for d in ('/opt/homebrew/bin', '/Library/Frameworks/Python.framework/Versions/Current/bin', '/usr/local/bin'):
+        cands += [Path(d) / f'python3.{m}' for m in range(20, 11, -1)]
+    return next((str(c) for c in cands if c.exists()), 'python3')
+
+
 def config():
-    return {**DEFAULTS, **load_json(CONFIG, {})}
+    cfg = {**DEFAULTS, **load_json(CONFIG, {})}
+    rom = cfg['romDir']
+    for k, sub in (('outDir', 'Apps'), ('workDir', 'nxnative-build.noindex'), ('oldSaveDir', 'save')):
+        if not cfg[k] and rom:
+            cfg[k] = str(Path(rom) / sub)
+    if not cfg['python']:
+        cfg['python'] = find_python(cfg['nxnative'])
+    return cfg
 
 
 def tool_env():
@@ -222,6 +239,8 @@ def walk(rom):
 
 
 def scan(cfg):
+    if not cfg['romDir']:
+        return [], [], []
     rom = Path(cfg['romDir'])
     cache = load_json(IDS_CACHE, {})
     n0 = len(cache)
@@ -817,7 +836,7 @@ class Handler(BaseHTTPRequestHandler):
             head = git(cfg, 'log', '-1', '--format=%h|%cd', '--date=format:%d/%m %H:%M')[1] if nx_ok else ''
             return self.send(200, {
                 'config': cfg, 'games': games, 'orphans': orphans, 'archives': archives, 'unzipping': sorted(UNZIPPING), 'catalog': catalog,
-                'rom': Path(cfg['romDir']).is_dir(), 'keys': Path(cfg['keys']).is_file(),
+                'rom': bool(cfg['romDir']) and Path(cfg['romDir']).is_dir(), 'keys': Path(cfg['keys']).is_file(),
                 'nxnative': {'ok': nx_ok, 'head': head},
                 'job': {'busy': JOB.busy(), 'info': JOB.info, 'result': JOB.result, 'item': JOB.item},
                 'queue': queue(),
@@ -969,6 +988,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def migrate_workdir(cfg):
     """1.0.3 : dossier de build renommé « ….noindex » (Spotlight l'ignore). Même disque : renommage instantané."""
+    if not cfg['workDir']:
+        return
     new = Path(cfg['workDir'])
     old = new.with_suffix('')
     if new.suffix == '.noindex' and not new.exists() and old.is_dir():

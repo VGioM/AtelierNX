@@ -26,9 +26,23 @@ Le script de nxnative attend un dossier par jeu : Atelier NX crée `nxnative-bui
 
 Réglages et état : `~/Library/Application Support/AtelierNX/` (`config.json`, `state.json`, `queue.json`, `catalog.json`, icônes). La variable `ATELIERNX_SUPPORT` permet d'utiliser un autre dossier (tests).
 
-## Prérequis
+## Installation
 
-Ceux de nxnative : Mac Apple Silicon, Xcode 27.1 et sa chaîne Metal, Homebrew (`xcodegen zstd glslang`, `dotnet-sdk`), Python 3.12+ avec `lz4 capstone fonttools nsz pycryptodome`, un clone de seedds/nxnative et votre `prod.keys`. Les chemins se règlent dans Réglages (les valeurs par défaut sont celles de ma machine).
+1. Prérequis de nxnative : Mac Apple Silicon, Xcode 27.1 et sa chaîne Metal, Homebrew, et votre propre `prod.keys` (extrait de votre console).
+   ```
+   brew install xcodegen zstd glslang dotnet-sdk python@3.13
+   ```
+2. Cloner nxnative et lui créer un environnement Python (3.12 ou plus) :
+   ```
+   git clone https://github.com/seedds/nxnative ~/nxnative
+   cd ~/nxnative
+   /opt/homebrew/bin/python3.13 -m venv .venv
+   .venv/bin/pip install lz4 capstone fonttools nsz pycryptodome
+   ```
+3. Télécharger Atelier NX dans les [releases](https://github.com/VGioM/AtelierNX/releases) (ou le compiler, voir plus bas) et le mettre dans Applications. L'app est signée ad hoc : au premier lancement, clic droit → Ouvrir.
+4. Dans **Réglages**, choisir le dossier des jeux Switch (NSP/XCI, sous-dossiers compris) et `prod.keys`.
+
+Valeurs par défaut : nxnative dans `~/nxnative`, Python = `~/nxnative/.venv/bin/python` (sinon le premier `python3.12+` de Homebrew), clés dans `~/.switch/prod.keys`. Les apps construites vont dans `<dossier des jeux>/Apps`, les fichiers de build dans `<dossier des jeux>/nxnative-build.noindex` (prévoir environ 2 × la taille du jeu + 10 Go) ; les deux se changent dans Réglages.
 
 ## Compiler
 
