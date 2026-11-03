@@ -75,6 +75,15 @@ pre.log .err { color: var(--err); }
 dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); width: min(640px, 92vw); padding: 18px 20px; }
 dialog::backdrop { background: rgba(0,0,0,.35); }
 textarea { width: 100%; min-height: 110px; font: 12px ui-monospace, Menlo, monospace; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); padding: 8px; }
+.brow { display: grid; grid-template-columns: 22px 34px minmax(0, 1fr) auto auto auto; gap: 10px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.brow .thumb { width: 34px; height: 34px; border-radius: 7px; font-size: 13px; }
+.brow.off > :not(.ck) { opacity: .45; }
+.brow .t { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brow select { padding: 3px 6px; font-size: 12.5px; max-width: 190px; }
+.brow .seg button { padding: 3px 9px; font-size: 12.5px; }
+.sortbar { display: flex; gap: 4px; align-items: center; padding: 0 14px 8px; border-bottom: 1px solid var(--line); }
+.sortbar .seg button { padding: 2px 9px; font-size: 12px; }
+@media (max-width: 760px) { .brow { grid-template-columns: 22px 34px minmax(0, 1fr); } .brow > .opt { grid-column: 3; } }
 details summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
 @media (max-width: 760px) { main { grid-template-columns: 1fr; } #list { max-height: none; border-right: none; } #detail { max-height: none; padding: 16px; } .row label.k { width: 100%; } }
 </style>
@@ -85,6 +94,7 @@ details summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
   <span class="muted small" id="nxhead"></span>
   <span class="sp"></span>
   <span class="small" id="nxupd"></span>
+  <button id="btnBatch" onclick="openBatch()">Construire plusieurs jeux…</button>
   <button id="btnCheck">Vérifier les mises à jour de nxnative</button>
   <button id="btnSettings">Réglages</button>
 </header>
@@ -135,6 +145,8 @@ const FR = {
   DM_FULLSCREEN: ['Affichage', {'0': 'Fenêtre', '1': 'Plein écran'}],
   DM_RUMBLE: ['Vibrations'], DM_RUMBLE_GAIN: ['Force des vibrations'], DM_RUMBLE_MIN: ['Seuil des vibrations'],
   DM_PRESENT_SNAP: ['Tampon d\'image supplémentaire'], DM_PSO_MTL4: ['Pipelines Metal 4'], DM_PSO_PREBUILD: ['Préparation des pipelines'],
+  DM_DYNAMIC_RESOLUTION: ['Résolution dynamique'], DM_UPSCALER: ['Mise à l\'échelle du jeu', {game: 'Celle du jeu', metalfx: 'MetalFX'}],
+  DM_SCREEN_ASPECT: ['Forme de l\'image', {'0': '16:9 (Switch)'}],
   DM_NVN_ENC_THREAD: ['Fil d\'encodage séparé'], DM_METAL_HUD: ['Compteur de performances'], DM_FPS_HOLD: ['Garder les images en retard', {on: 'Oui', off: 'Non'}],
 };
 const NOTE_FR = {
@@ -142,6 +154,8 @@ const NOTE_FR = {
   'Up to one frame more display latency.': 'Jusqu\'à une image de latence en plus.',
   'Keeps a pipeline archive; uses more memory.': 'Garde une archive de pipelines ; utilise plus de mémoire.',
   'The first start waits a few minutes for it, once.': 'Le premier lancement attend quelques minutes, une seule fois.',
+  'Adjusts resolution between 70% and 100% under load. Turn off to keep full resolution for the selected console mode.': 'Varie entre 70 et 100 % de la résolution quand le jeu peine. Désactive pour garder la pleine résolution du mode choisi.',
+  'Renders about a quarter more pixels: a little slower and warmer.': 'Calcule environ un quart de pixels en plus : un peu plus lent et plus chaud.',
 };
 const SECTION = { Game: 'Jeu', Controls: 'Commandes', Performance: 'Performances', Display: 'Affichage' };
 const GLOBAL_DEFAULTS = [
@@ -169,6 +183,9 @@ function choicesOf(st) {
 }
 const PLAT = {'mac-app': 'Mac', 'ios': 'iPhone / iPad'};
 let S = null, sel = null, opts = {}, since = 0, es = null;
+const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+let catSort = store.get('catSort', 'az');
+const dday = t => t ? new Date(t * 1000).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '';
 let live = { stages: [], cur: null, prog: null, log: [], done: null };
 
 const $ = s => document.querySelector(s);
@@ -225,12 +242,21 @@ function renderList() {
     const c = S.catalog, nNew = c.games.filter(g => g.new).length;
     h += `<div class="group">Compatibles que tu n'as pas · ${c.games.length}</div>
       <div class="muted small" style="padding:6px 14px 8px;border-bottom:1px solid var(--line)">Jeux qui ont un profil nxnative. Liste mise à jour toutes les 6 h (dernière : ${new Date(c.fetched * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})${nNew ? ` · ${nNew} « nouveau » : arrivés depuis ta dernière mise à jour de nxnative` : ''}. <button class="link small" onclick="refreshCatalog(this)">Actualiser</button></div>`
-      + c.games.map(g => `<div class="game cat" data-cat="${g.id}" title="Voir le profil sur GitHub">${thumb(g)}<div><div class="t" style="font-weight:500">${esc(g.name)}</div>${g.new ? '<div class="chips"><span class="chip ok">nouveau</span></div>' : ''}</div></div>`).join('');
+      + `<div class="sortbar"><span class="muted small" style="margin-right:4px">Trier</span><span class="seg">${[['az', 'A → Z'], ['new', 'Plus récents'], ['old', 'Plus anciens']].map(([k, l]) => `<button class="${catSort === k ? 'on' : ''}" onclick="setCatSort('${k}')">${l}</button>`).join('')}</span></div>`
+      + sortCat(c.games).map(g => `<div class="game cat" data-cat="${g.id}" title="Voir le profil sur GitHub">${thumb(g)}<div><div class="t" style="font-weight:500">${esc(g.name)}</div><div class="chips">${g.new ? '<span class="chip ok">nouveau</span>' : ''}${g.added ? `<span class="chip">profil du ${dday(g.added)}</span>` : ''}</div></div></div>`).join('');
   }
   el.innerHTML = h || '<div class="note" style="margin:14px">Aucun jeu trouvé dans ce dossier.</div>';
   el.querySelectorAll('.game.cat').forEach(n => n.onclick = () => api('/api/profile-page', { id: n.dataset.cat }));
-  el.querySelectorAll('.game:not(.cat)').forEach(n => n.onclick = () => { sel = n.dataset.id; renderList(); renderDetail(); });
+  el.querySelectorAll('.game:not(.cat)').forEach(n => n.onclick = () => pick(n.dataset.id));
 }
+
+function sortCat(list) {
+  const az = (a, b) => a.name.localeCompare(b.name, 'fr', { sensitivity: 'base' });
+  if (catSort === 'az') return [...list].sort(az);
+  const k = catSort === 'new' ? -1 : 1;   // date inconnue : à la fin
+  return [...list].sort((a, b) => (a.added == null) - (b.added == null) || k * ((a.added || 0) - (b.added || 0)) || az(a, b));
+}
+function setCatSort(k) { catSort = k; store.set('catSort', k); const y = $('#list').scrollTop; renderList(); $('#list').scrollTop = y; }
 
 function gameOpts(g) {
   if (!opts[g.id]) opts[g.id] = { platform: 'mac-app', language: S.config.language || 'fr', update: g.updates.length ? 'all' : 'none', dlc: true, noMotion: false, romfsSeparate: false, allowDamaged: false };
@@ -238,6 +264,7 @@ function gameOpts(g) {
 }
 
 function renderDetail() {
+  if (sel === BATCH) return $('#bRows') ? bRenderRows() : renderBatch();   // rafraîchi : garde la recherche et le défilement
   const g = S.games.find(x => x.id === sel); if (!g) return;
   const o = gameOpts(g);
   const mine = S.job.info?.id === g.id;
@@ -358,7 +385,7 @@ function renderQueue() {
   const box = $('#queueBox'); if (!box || !S) return;
   const q = S.queue, cur = S.job.busy ? (S.job.item || S.job.info) : null;
   if (!cur && !q.items.length && !q.history.length) { box.innerHTML = ''; return; }
-  let h = `<div class="group" style="display:flex;align-items:center">File de construction${q.items.length ? ' · ' + q.items.length + ' à suivre' : ''}<span style="margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400">${q.items.length || q.paused ? `<button class="link small" onclick="pauseQueue(${!q.paused})">${q.paused ? '▶ Reprendre' : '⏸ Pause'}</button>` : ''}</span></div>`;
+  let h = `<div class="group" style="display:flex;align-items:center">File de construction${q.items.length ? ' · ' + q.items.length + ' à suivre' : ''}<span style="margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400"><button class="link small" onclick="openBatch()">+ plusieurs</button>${q.items.length || q.paused ? `<button class="link small" onclick="pauseQueue(${!q.paused})">${q.paused ? '▶ Reprendre' : '⏸ Pause'}</button>` : ''}</span></div>`;
   if (q.paused) h += `<div class="note warn small" style="margin:8px 12px">File en pause : aucun nouveau build ne démarrera.${cur ? ' Le build en cours continue.' : ''}</div>`;
   if (cur) {
     const p = live.prog, f = p?.frac, st = live.cur;
@@ -386,6 +413,81 @@ async function importSave(id, exists) {
   const r = await api('/api/import-save', { id }); alertBox(r.msg); refresh();
 }
 function alertBox(msg) { const d = $('#detail'); const n = document.createElement('div'); n.className = 'note warn'; n.textContent = msg; d.prepend(n); setTimeout(() => n.remove(), 8000); }
+
+// ---------- construire plusieurs jeux d'un coup ----------
+// Une ligne par jeu : case à cocher, Mac / iPhone / les deux, mise à jour, DLC. Les choix restent pendant la session.
+const BATCH = '__batch';
+let B = { rows: {}, platform: store.get('batchPlat', 'mac-app'), language: null, filter: '', show: 'all' };
+function bRow(g) { return B.rows[g.id] ||= { on: false, platform: null, update: g.updates.length ? 'all' : 'none', dlc: true }; }
+function bPlat(r) { return r.platform || B.platform; }
+function plats(r) { const p = bPlat(r); return p === 'both' ? ['mac-app', 'ios'] : [p]; }
+function bGames() {
+  const f = B.filter.trim().toLowerCase();
+  return S.games.filter(g => g.hasBase && (!f || g.name.toLowerCase().includes(f) || g.id.toLowerCase().includes(f)))
+    .filter(g => B.show === 'all' || (B.show === 'never' ? !g.builds.length : B.show === 'stale' ? g.builds.some(b => b.stale) : g.profile));
+}
+function openBatch() { sel = BATCH; B.language ||= S.config.language || 'fr'; renderList(); renderBatch(); $('#detail').scrollTop = 0; }
+function bCount() { return S.games.reduce((n, g) => n + (B.rows[g.id]?.on && g.hasBase ? plats(B.rows[g.id]).length : 0), 0); }
+const PSEG = [['mac-app', 'Mac'], ['ios', 'iPhone'], ['both', 'Les deux']];
+function renderBatch() {
+  $('#detail').innerHTML = `<div class="card"><h3>Construire plusieurs jeux</h3>
+    <p class="muted small" style="margin-top:0">Coche les jeux, choisis pour chacun la mise à jour, les DLC et la plateforme, puis ajoute-les à la file : ils se construisent l'un après l'autre, tout seuls. Un jeu déjà en file pour la même plateforme garde sa place et prend les nouveaux choix.</p>
+    <div class="row"><label class="k">Pour (par défaut)</label><span class="seg">${PSEG.map(([k, l]) => `<button class="${B.platform === k ? 'on' : ''}" onclick="bSetPlat('${k}')">${l}</button>`).join('')}</span><span class="muted small">chaque ligne peut changer</span></div>
+    <div class="row"><label class="k">Langue du jeu</label><select onchange="B.language=this.value">${LANGS.map(([c, n]) => `<option value="${c}" ${B.language === c ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+    <div class="row"><label class="k">Afficher</label><span class="seg">${[['all', 'Tous'], ['profile', 'Avec profil'], ['never', 'Jamais construits'], ['stale', 'À reconstruire']].map(([k, l]) => `<button class="${B.show === k ? 'on' : ''}" onclick="B.show='${k}';renderBatch()">${l}</button>`).join('')}</span>
+      <input type="text" placeholder="Chercher…" style="width:160px" value="${esc(B.filter)}" oninput="B.filter=this.value;bRenderRows()"></div>
+    <div class="row small"><button class="link" onclick="bAll(true)">Tout cocher</button><button class="link" onclick="bAll(false)">Tout décocher</button>
+      <span class="muted">· cochés :</span><button class="link" onclick="bSetAll('update','all')">màj récente</button><button class="link" onclick="bSetAll('update','none')">sans màj</button>
+      <button class="link" onclick="bSetAll('dlc',true)">avec DLC</button><button class="link" onclick="bSetAll('dlc',false)">sans DLC</button></div>
+    <div id="bRows"></div>
+    <div class="row" style="margin-top:14px"><button class="primary" id="bGo" onclick="bSubmit()"></button><span class="muted small" id="bNote"></span></div>
+    <p class="muted small">Options avancées (sans mouvement, fichiers à part sur iPhone…) : depuis la fiche du jeu.</p>
+  </div>`;
+  bRenderRows();
+}
+function bRenderRows() {
+  const list = bGames(), el = $('#bRows'); if (!el) return;
+  el.innerHTML = list.length ? list.map(g => {
+    const r = bRow(g), p = bPlat(r), chips = [];
+    chips.push(g.profile ? '<span class="chip ok">profil</span>' : '<span class="chip warn">sans profil</span>');
+    for (const b of g.builds) chips.push(`<span class="chip ${b.stale ? 'warn' : 'ok'}">${PLAT[b.platform]} ✓${b.stale ? ' (ancien)' : ''}</span>`);
+    if (S.queue.items.some(i => i.id === g.id)) chips.push('<span class="chip warn">en file</span>');
+    const upSel = g.updates.length
+      ? `<select onchange="bSet('${g.id}','update',this.value)"><option value="all" ${r.update === 'all' ? 'selected' : ''}>la plus récente (${upd(g.updates.at(-1).ver).replace('mise à jour ', '')})</option>${g.updates.slice(0, -1).map(u => `<option value="${u.ver}" ${String(r.update) === String(u.ver) ? 'selected' : ''}>${upd(u.ver)}</option>`).join('')}<option value="none" ${r.update === 'none' ? 'selected' : ''}>sans màj</option></select>`
+      : '<span class="muted small">pas de màj</span>';
+    const dlc = g.dlc.length ? `<label class="small"><input type="checkbox" ${r.dlc ? 'checked' : ''} onchange="bSet('${g.id}','dlc',this.checked)"> ${g.dlc.length} DLC</label>` : '<span class="muted small">pas de DLC</span>';
+    const seg = `<span class="seg">${PSEG.map(([k, l]) => `<button class="${p === k ? 'on' : ''}" onclick="bSet('${g.id}','platform','${k}')">${l}</button>`).join('')}</span>`;
+    return `<div class="brow ${r.on ? '' : 'off'}"><input class="ck" type="checkbox" ${r.on ? 'checked' : ''} onchange="bSet('${g.id}','on',this.checked)">${thumb(g)}<div style="min-width:0"><div class="t" title="${esc(g.name)}">${esc(g.name)}</div><div class="chips">${chips.join('')}</div></div><span class="opt">${seg}</span><span class="opt">${upSel}</span><span class="opt">${dlc}</span></div>`;
+  }).join('') : '<div class="muted" style="padding:10px 0">Aucun jeu ne correspond.</div>';
+  bFooter();
+}
+function bFooter() {
+  const n = bCount(), b = $('#bGo'); if (!b) return;
+  b.disabled = !n; b.textContent = n ? `Ajouter ${n} build${n > 1 ? 's' : ''} à la file` : 'Coche au moins un jeu';
+  const on = S.games.filter(g => B.rows[g.id]?.on && g.hasBase);
+  const size = on.reduce((t, g) => { const r = B.rows[g.id], ups = r.update === 'all' ? g.updates.slice(-1) : g.updates.filter(u => String(u.ver) === String(r.update));
+    return t + [g.base, ...ups, ...(r.dlc ? g.dlc : [])].reduce((s, f) => s + (f?.size || 0), 0); }, 0);
+  $('#bNote').textContent = n ? `${on.length} jeu${on.length > 1 ? 'x' : ''} · ${gb(size)} de fichiers · ${S.job.busy || S.queue.items.length ? 'démarrera après les builds déjà en file' : 'démarre tout de suite'}` : '';
+}
+function bSet(id, k, v) { const r = bRow(S.games.find(x => x.id === id)); r[k] = v; if (k !== 'on') r.on = true; bRenderRows(); }
+function bSetPlat(k) { B.platform = k; store.set('batchPlat', k); Object.values(B.rows).forEach(r => r.platform = null); renderBatch(); }
+function bAll(on) { bGames().forEach(g => bRow(g).on = on); bRenderRows(); }
+function bSetAll(k, v) { bGames().forEach(g => { const r = bRow(g); if (r.on) r[k] = k === 'update' && !g.updates.length ? 'none' : v; }); bRenderRows(); }
+async function bSubmit() {
+  const items = [];
+  for (const g of S.games) {
+    const r = B.rows[g.id]; if (!r?.on || !g.hasBase) continue;
+    for (const platform of plats(r)) items.push({ id: g.id, platform, language: B.language, update: r.update, dlc: r.dlc, noMotion: false, romfsSeparate: false, allowDamaged: false });
+  }
+  if (!items.length) return;
+  $('#bGo').disabled = true;
+  try {
+    await api('/api/build/batch', { items });
+    Object.values(B.rows).forEach(r => r.on = false);
+    await refresh(); if (S.job.busy && !es) follow();
+    alertBox(`${items.length} build${items.length > 1 ? 's' : ''} ajouté${items.length > 1 ? 's' : ''} à la file : ils s'enchaînent tout seuls (suivi en haut à gauche).`);
+  } catch (e) { alertBox(e.message); bFooter(); }
+}
 
 let prefsFor = null, prefsData = null;
 async function editPrefs(id) {
@@ -456,7 +558,7 @@ if (location.protocol === 'file:' || TOKEN.startsWith('__')) {
   offline('Cette page ne fonctionne pas ouverte seule : elle a besoin du petit serveur qui lit tes jeux et lance nxnative.<br><br>Ouvre plutôt <b>Atelier NX</b> dans le dossier Applications.');
   throw new Error('page ouverte sans serveur');
 }
-refresh().then(() => { if (S.job.info) { sel = S.job.info.id; follow(); renderList(); renderDetail(); } })
+refresh().then(() => { if (S.job.info && sel !== BATCH) { sel = S.job.info.id; follow(); renderList(); renderDetail(); } })
   .catch(e => offline('Le serveur d\'Atelier NX ne répond pas (' + esc(e.message) + '). Quitte et relance l\'app.'));
 setInterval(() => { if (!S?.job.busy) refresh(); }, 30000);
 </script>

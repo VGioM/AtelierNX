@@ -345,9 +345,18 @@ def build_catalog(cfg, fetch):
                 names[i] = m.group(1).strip() if m else i
             else:
                 names[i] = i
+        # Date d'arrivée de chaque profil (premier commit qui ajoute son README) : tri « plus récents / plus anciens ».
+        added = {}
+        code, log = git(cfg, 'log', '--format=@%ct', '--diff-filter=A', '--name-only', ref, '--', 'dm/games/*/README.md', timeout=120)
+        t = 0
+        for l in log.splitlines():
+            if l.startswith('@'):
+                t = int(l[1:])
+            elif l.strip():
+                added[l.split('/')[-2]] = t   # du plus récent au plus ancien : on garde le dernier vu, le premier ajout
         local = {p.name for p in (Path(cfg['nxnative']) / 'dm/games').iterdir()} if (Path(cfg['nxnative']) / 'dm/games').is_dir() else set()
         cat = {'fetched': time.time(), 'ref': ref[:7],
-               'games': [{'id': i, 'name': names[i], 'new': i not in local} for i in ids]}
+               'games': [{'id': i, 'name': names[i], 'new': i not in local, 'added': added.get(i)} for i in ids]}
         save_json(CATALOG, cat)
         return cat
 
@@ -355,6 +364,8 @@ def build_catalog(cfg, fetch):
 def catalog_for(cfg, owned):
     """Jeux avec profil que l'on n'a pas. Une variante régionale (« …, Asian release ») est fusionnée avec le jeu principal."""
     cat = load_json(CATALOG, None)
+    if cat and cat['games'] and 'added' not in cat['games'][0]:   # catalogue d'une version précédente : sans dates
+        cat = build_catalog(cfg, fetch=False) or cat
     if not cat:
         return None
     owned_ids = {g['id'] for g in owned}
@@ -603,26 +614,38 @@ def save_queue(q):
 
 
 def enqueue(cfg, req):
-    games, _, _ = scan(cfg)
-    game = next((g for g in games if g['id'] == req.get('id')), None)
-    if not game:
-        raise ValueError('Jeu introuvable.')
-    if not game['hasBase']:
-        raise ValueError('Il manque le jeu de base (seulement une mise à jour ou des DLC).')
-    item = {'id': game['id'], 'name': game['name'], **{k: req.get(k) for k in OPT_KEYS}}
-    item['platform'] = item['platform'] or 'mac-app'
-    item['language'] = item['language'] or cfg['language']
+    return enqueue_many(cfg, [req])[0]
+
+
+def enqueue_many(cfg, reqs):
+    """Ajoute des builds à la file, dans l'ordre donné ; renvoie la position de chacun."""
+    games = {g['id']: g for g in scan(cfg)[0]}
+    items = []
+    for req in reqs:
+        game = games.get(req.get('id'))
+        if not game:
+            raise ValueError(f"Jeu introuvable : {req.get('id')}")
+        if not game['hasBase']:
+            raise ValueError(f"{game['name']} : il manque le jeu de base (seulement une mise à jour ou des DLC).")
+        item = {'id': game['id'], 'name': game['name'], **{k: req.get(k) for k in OPT_KEYS}}
+        item['platform'] = item['platform'] or 'mac-app'
+        item['language'] = item['language'] or cfg['language']
+        item['update'] = item['update'] or 'all'
+        item['dlc'] = True if item['dlc'] is None else item['dlc']
+        items.append(item)
+    out = []
     with QLOCK:
         q = queue()
-        same = next((i for i in q['items'] if i['id'] == item['id'] and i['platform'] == item['platform']), None)
-        if same:                                  # déjà dans la file : on met ses options à jour, sans changer sa place
-            same.update(item); pos = q['items'].index(same) + 1
-        else:
-            item['qid'] = secrets.token_hex(4); item['added'] = time.time()
-            q['items'].append(item); pos = len(q['items'])
+        for item in items:
+            same = next((i for i in q['items'] if i['id'] == item['id'] and i['platform'] == item['platform']), None)
+            if same:                              # déjà dans la file : on met ses options à jour, sans changer sa place
+                same.update(item); out.append(q['items'].index(same) + 1)
+            else:
+                item['qid'] = secrets.token_hex(4); item['added'] = time.time()
+                q['items'].append(item); out.append(len(q['items']))
         save_queue(q)
     kick()
-    return pos
+    return out
 
 
 def kick():
@@ -671,7 +694,7 @@ def start_build(cfg, req):
     out = Path(cfg['outDir']) / (safe_name(game['name']) + ('.app' if platform == 'mac-app' else '.ipa'))
     nice = ['nice', '-n', '10'] if cfg.get('lowPriority', '1') != '0' else []
     cmd = nice + [cfg['python'], '-u', 'scripts/build_ipa_from_nsp.py', str(folder), '-k', cfg['keys'],
-           '--progress', 'json', '--platform', platform, '-l', lang, '-o', str(out)]
+           '--progress', 'json', '--platform', platform, '-l', lang, '-o', str(out), '--title-id', game['id']]
     if platform == 'ios' and req.get('romfsSeparate'):
         cmd += ['--romfs', 'separate']
     if req.get('noMotion'):
@@ -878,6 +901,9 @@ class Handler(BaseHTTPRequestHandler):
             req = self.body()
             if u.path == '/api/build':
                 return self.send(200, {'ok': True, 'position': enqueue(cfg, req)})
+            if u.path == '/api/build/batch':
+                pos = enqueue_many(cfg, req.get('items') or [])
+                return self.send(200, {'ok': True, 'positions': pos})
             if u.path == '/api/queue/remove':
                 with QLOCK:
                     q = queue(); q['items'] = [i for i in q['items'] if i['qid'] != req.get('qid')]; save_queue(q)
