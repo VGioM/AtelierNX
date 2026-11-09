@@ -9,11 +9,13 @@ Interface graphique simple pour [nxnative](https://github.com/seedds/nxnative) (
 - Liste les jeux Switch de tout le dossier, sous-dossiers compris, avec leurs mises à jour et DLC où qu'ils soient rangés. L'identifiant est lu dans le fichier (ticket du NSP, en-têtes NCA d'un XCI ou d'un NSP sans ticket, déchiffrés avec `prod.keys`), sinon dans le nom (`[title ID]`). Jeux groupés « avec profil » / « sans profil », jaquettes eShop, archives `.zip` décompressables.
 - Construit une app Mac ou une IPA avec `scripts/build_ipa_from_nsp.py`, en choisissant la langue, la mise à jour et les DLC, avec la progression en direct (`--progress json`).
 - File de construction : « Construire » ajoute le jeu à la file avec ses options (langue, mise à jour, DLC, options avancées) ; les builds s'enchaînent, un échec n'arrête pas la file. Ordre modifiable, pause, historique. La file est gardée sur disque (`queue.json`) : quitter pendant un build le remet en tête, file en pause.
+- « Construire plusieurs jeux » : une ligne par jeu (Mac, iPhone ou les deux, mise à jour, DLC), filtres (avec profil, jamais construits, à reconstruire) et recherche ; un clic ajoute tout à la file.
+- Options avancées : build Mac rapide (seulement les shaders vus pendant les tests de nxnative, `--seen-shaders`), shaders en fichiers séparés pour AltServer (`--shader-files`), sans détection de mouvement, fichiers du jeu à part sur iPhone, fichiers endommagés acceptés.
 - Builds en priorité basse (`nice -n 10`, réglable) : ils prennent le processeur libre sans faire ramer les autres apps.
 - Bouton « Jouer », journal du jeu, reprise des anciennes sauvegardes NX2Apple.
 - « Réglages du jeu » : les réglages de la fenêtre de lancement nxnative (liste lue dans `launcher.json`), pré-remplis via les choix enregistrés de l'app (`launcher.<VAR>`), sans les bloquer. Réglages par défaut appliqués automatiquement à chaque nouveau build Mac. `env.txt` reste accessible pour forcer un réglage.
 - Vérifie et installe les mises à jour de nxnative (`git pull`), et signale les jeux construits avec une ancienne version.
-- « Compatibles que tu n'as pas » : les jeux qui ont un profil nxnative et ne sont pas dans le dossier (branche distante lue par `git fetch` toutes les 6 h, variantes régionales fusionnées, « nouveau » pour les profils arrivés depuis la dernière mise à jour du clone). Un clic ouvre le profil sur GitHub.
+- « Compatibles que tu n'as pas » : les jeux qui ont un profil nxnative et ne sont pas dans le dossier (branche distante lue par `git fetch` toutes les 6 h, variantes régionales fusionnées, « nouveau » pour les profils arrivés depuis la dernière mise à jour du clone), triés de A à Z ou par date d'arrivée du profil. Un clic ouvre le profil sur GitHub.
 
 ## Fonctionnement
 

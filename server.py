@@ -600,7 +600,7 @@ def safe_name(n):
 # même en cas d'échec. La file est gardée sur disque ; quitter pendant un build la remet en tête et met la file en pause.
 QUEUE_FILE = SUPPORT / 'queue.json'
 QLOCK = threading.RLock()
-OPT_KEYS = ('platform', 'language', 'update', 'dlc', 'noMotion', 'romfsSeparate', 'allowDamaged')
+OPT_KEYS = ('platform', 'language', 'update', 'dlc', 'noMotion', 'romfsSeparate', 'allowDamaged', 'seenShaders', 'shaderFiles')
 
 
 def queue():
@@ -701,6 +701,10 @@ def start_build(cfg, req):
         cmd += ['--no-motion']
     if req.get('allowDamaged'):
         cmd += ['--allow-damaged']
+    if platform == 'mac-app' and req.get('seenShaders'):   # nxnative : seulement les shaders vus en test, minutes au lieu d'heures
+        cmd += ['--seen-shaders']
+    if platform == 'ios' and req.get('shaderFiles'):       # bibliothèque de shaders en fichiers séparés (AltServer : 2 Go max par fichier)
+        cmd += ['--shader-files']
     log = folder / 'atelier.log'
     with JOB.cond:
         JOB.events, JOB.result, JOB.cancelled = [], None, False

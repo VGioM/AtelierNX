@@ -62,7 +62,7 @@ input[type=text] { width: 100%; }
 .files li { word-break: break-all; }
 .stage { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; }
 .stage .ic { width: 16px; flex: none; text-align: center; }
-.stage.done .ic { color: var(--ok); } .stage.fail .ic { color: var(--err); }
+.stage.done .ic { color: var(--ok); } .stage.warn .ic { color: var(--warn); } .stage.fail .ic { color: var(--err); }
 .bar { height: 8px; background: var(--bar); border-radius: 99px; overflow: hidden; margin: 8px 0 4px; }
 .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .4s; }
 .bar.indet > div { width: 30% !important; animation: slide 1.3s ease-in-out infinite; }
@@ -137,7 +137,8 @@ details summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
 const TOKEN = '__TOKEN__';
 const LANGS = [['fr','Français'],['fr-CA','Français (Canada)'],['en-US','English (US)'],['en-GB','English (UK)'],['es','Español'],['es-419','Español (Latinoamérica)'],['de','Deutsch'],['it','Italiano'],['nl','Nederlands'],['pt','Português'],['pt-BR','Português (Brasil)'],['ru','Русский'],['ja','日本語'],['ko','한국어'],['zh-Hans','中文（简体）'],['zh-Hant','中文（繁體）']];
 const FR = {
-  DM_FPS_TARGET: ['Fréquence d\'images', {'30': '30 i/s', '60': '60 i/s'}],
+  DM_FPS_TARGET: ['Fréquence d\'images', {'30': '30 i/s', '60': '60 i/s', '120': '120 i/s'}],
+  DM_SW2: ['Manettes Switch 2'], DM_PAD_PRESS_TO_JOIN: ['Appuyer sur un bouton pour rejoindre'],
   DM_RENDER_SCALE: ['Résolution de rendu'],
   DM_OPMODE: ['Mode console', {'1': 'TV (docké)', '0': 'Portable'}],
   DM_PRESENT_UPSCALE: ['Mise à l\'échelle', {off: 'Standard', metalfx: 'MetalFX'}],
@@ -146,7 +147,7 @@ const FR = {
   DM_RUMBLE: ['Vibrations'], DM_RUMBLE_GAIN: ['Force des vibrations'], DM_RUMBLE_MIN: ['Seuil des vibrations'],
   DM_PRESENT_SNAP: ['Tampon d\'image supplémentaire'], DM_PSO_MTL4: ['Pipelines Metal 4'], DM_PSO_PREBUILD: ['Préparation des pipelines'],
   DM_DYNAMIC_RESOLUTION: ['Résolution dynamique'], DM_UPSCALER: ['Mise à l\'échelle du jeu', {game: 'Celle du jeu', metalfx: 'MetalFX'}],
-  DM_SCREEN_ASPECT: ['Forme de l\'image', {'0': '16:9 (Switch)'}],
+  DM_SCREEN_ASPECT: ['Forme de l\'image', {'0': '16:9 (Switch)', auto: 'Selon l\'écran'}],
   DM_NVN_ENC_THREAD: ['Fil d\'encodage séparé'], DM_METAL_HUD: ['Compteur de performances'], DM_FPS_HOLD: ['Garder les images en retard', {on: 'Oui', off: 'Non'}],
 };
 const NOTE_FR = {
@@ -155,15 +156,18 @@ const NOTE_FR = {
   'Keeps a pipeline archive; uses more memory.': 'Garde une archive de pipelines ; utilise plus de mémoire.',
   'The first start waits a few minutes for it, once.': 'Le premier lancement attend quelques minutes, une seule fois.',
   'Adjusts resolution between 70% and 100% under load. Turn off to keep full resolution for the selected console mode.': 'Varie entre 70 et 100 % de la résolution quand le jeu peine. Désactive pour garder la pleine résolution du mode choisi.',
+  'Lets the game lower its resolution under load. Turn off to keep full resolution for the selected console mode.': 'Le jeu peut baisser sa résolution quand il peine. Désactive pour garder la pleine résolution du mode choisi.',
+  'Plays Joy-Con 2 and Pro Controller 2 over Bluetooth: hold Sync on one during the game to pair it. macOS asks once for Bluetooth access.': 'Joy-Con 2 et manette Pro 2 en Bluetooth : maintiens Sync sur la manette pendant le jeu pour l\'appairer. macOS demande une fois l\'accès Bluetooth.',
   'Renders about a quarter more pixels: a little slower and warmer.': 'Calcule environ un quart de pixels en plus : un peu plus lent et plus chaud.',
 };
 const SECTION = { Game: 'Jeu', Controls: 'Commandes', Performance: 'Performances', Display: 'Affichage' };
 const GLOBAL_DEFAULTS = [
-  ['DM_FPS_TARGET', [['30', '30 i/s'], ['60', '60 i/s']], 'seulement les jeux qui le proposent'],
+  ['DM_FPS_TARGET', [['30', '30 i/s'], ['60', '60 i/s'], ['120', '120 i/s']], 'seulement les jeux qui le proposent'],
   ['DM_FULLSCREEN', [['0', 'Fenêtre'], ['1', 'Plein écran']]],
   ['DM_OPMODE', [['1', 'TV (docké)'], ['0', 'Portable']]],
   ['DM_PRESENT_UPSCALE', [['off', 'Standard'], ['metalfx', 'MetalFX']]],
   ['DM_RUMBLE', [['1', 'Oui'], ['0', 'Non']]],
+  ['DM_SW2', [['1', 'Oui'], ['0', 'Non']], 'Joy-Con 2 et manette Pro 2 en Bluetooth'],
   ['DM_METAL_HUD', [['0', 'Non'], ['1', 'Oui']]],
   ['window.show', [['1', 'Oui'], ['0', 'Non (⌥ au lancement pour la revoir)']], '', 'Fenêtre de réglages au lancement'],
 ];
@@ -259,7 +263,7 @@ function sortCat(list) {
 function setCatSort(k) { catSort = k; store.set('catSort', k); const y = $('#list').scrollTop; renderList(); $('#list').scrollTop = y; }
 
 function gameOpts(g) {
-  if (!opts[g.id]) opts[g.id] = { platform: 'mac-app', language: S.config.language || 'fr', update: g.updates.length ? 'all' : 'none', dlc: true, noMotion: false, romfsSeparate: false, allowDamaged: false };
+  if (!opts[g.id]) opts[g.id] = { platform: 'mac-app', language: S.config.language || 'fr', update: g.updates.length ? 'all' : 'none', dlc: true, noMotion: false, romfsSeparate: false, allowDamaged: false, seenShaders: false, shaderFiles: false };
   return opts[g.id];
 }
 
@@ -303,7 +307,9 @@ function renderDetail() {
   if (g.dlc.length) h += `<div class="row"><label class="k">DLC</label><label><input type="checkbox" ${o.dlc ? 'checked' : ''} onchange="setOpt('dlc',this.checked)"> inclure les ${g.dlc.length} DLC</label></div>`;
   h += `<details><summary>Options avancées</summary>
     <div class="row"><label><input type="checkbox" ${o.noMotion ? 'checked' : ''} onchange="setOpt('noMotion',this.checked)"> Sans détection de mouvement (si les commandes gyroscopiques font n'importe quoi)</label></div>
-    ${o.platform === 'ios' ? `<div class="row"><label><input type="checkbox" ${o.romfsSeparate ? 'checked' : ''} onchange="setOpt('romfsSeparate',this.checked)"> Fichiers du jeu à part (IPA plus petite, à copier une fois sur l'iPhone)</label></div>` : ''}
+    ${o.platform === 'ios' ? `<div class="row"><label><input type="checkbox" ${o.romfsSeparate ? 'checked' : ''} onchange="setOpt('romfsSeparate',this.checked)"> Fichiers du jeu à part (IPA plus petite, à copier une fois sur l'iPhone)</label></div>
+    <div class="row"><label><input type="checkbox" ${o.shaderFiles ? 'checked' : ''} onchange="setOpt('shaderFiles',this.checked)"> Shaders en fichiers séparés (pour AltServer, qui ne copie pas un fichier de plus de 2 Go ; avec « Fichiers du jeu à part »)</label></div>` : ''}
+    ${o.platform === 'mac-app' ? `<div class="row"><label><input type="checkbox" ${o.seenShaders ? 'checked' : ''} onchange="setOpt('seenShaders',this.checked)"> Build rapide : seulement les shaders vus pendant les tests de nxnative (quelques minutes au lieu d'heures ; des zones peuvent s'afficher sans certains effets jusqu'à un build complet)</label></div>` : ''}
     <div class="row"><label><input type="checkbox" ${o.allowDamaged ? 'checked' : ''} onchange="setOpt('allowDamaged',this.checked)"> Continuer malgré des fichiers endommagés</label></div>
   </details>`;
   const files = [g.base, ...(o.update === 'all' ? g.updates : g.updates.filter(u => String(u.ver) === String(o.update))), ...(o.dlc ? g.dlc : [])].filter(Boolean);
@@ -327,7 +333,7 @@ function renderProgress() {
   const el = $('#progress'); if (!el) return;
   const info = S.job.info || {};
   let h = `<h3>${live.done ? (live.done.ok ? '✓ Terminé' : live.done.cancelled ? 'Annulé' : '✗ Échec') : 'Construction en cours'} · ${PLAT[info.platform] || ''} · ${esc(info.language || '')}</h3>`;
-  for (const s of live.stages) h += `<div class="stage ${s.end ? (s.end.ok === false ? 'fail' : 'done') : ''}"><span class="ic">${s.end ? (s.end.ok === false ? '✗' : '✓') : '•'}</span><span>[${s.k}/${s.n}] ${esc(s.name)}${s.end ? ` <span class="muted small">${esc(s.end.summary || '')} · ${fmtDur(s.end.elapsed)}</span>` : s.step ? ` <span class="muted small">— ${esc(s.step)}</span>` : ''}</span></div>`;
+  for (const s of live.stages) h += `<div class="stage ${s.end ? (s.end.ok === false ? 'fail' : s.end.warn ? 'warn' : 'done') : ''}"><span class="ic">${s.end ? (s.end.ok === false ? '✗' : s.end.warn ? '⚠' : '✓') : '•'}</span><span>[${s.k}/${s.n}] ${esc(s.name)}${s.end ? ` <span class="muted small">${esc(s.end.summary || '')} · ${fmtDur(s.end.elapsed)}</span>` : s.step ? ` <span class="muted small">— ${esc(s.step)}</span>` : ''}</span></div>`;
   if (!live.done) {
     const p = live.prog, f = p && p.frac != null ? p.frac : null;
     h += `<div class="bar ${f == null ? 'indet' : ''}"><div style="width:${f == null ? 0 : (f * 100).toFixed(1)}%"></div></div>`;
@@ -349,7 +355,7 @@ function onEvent(e) {
     case 'stage': { live.stages.forEach(s => s.end ||= { ok: true }); live.cur = { k: e.k, n: e.n, name: e.name, step: e.step }; live.stages.push(live.cur); live.prog = null; break; }
     case 'step': if (live.cur) live.cur.step = e.step ?? e.name ?? e.msg; break;
     case 'progress': live.prog = e; if (live.cur && e.step) live.cur.step = e.step; break;
-    case 'stage_end': if (live.cur) live.cur.end = { ok: e.ok, summary: e.summary, elapsed: e.elapsed }; live.prog = null; break;
+    case 'stage_end': if (live.cur) live.cur.end = { ok: e.ok, warn: e.warn, summary: e.summary, elapsed: e.elapsed }; live.prog = null; break;
     case 'say': live.log.push({ msg: e.msg, err: e.err }); break;
     case 'done': live.done = e; setTimeout(refresh, 300); setTimeout(refresh, 1800); break;
   }
@@ -377,6 +383,7 @@ function itemSummary(i) {
   const g = S.games.find(x => x.id === i.id), parts = [PLAT[i.platform], LANGNAME(i.language)];
   if (i.update === 'none') parts.push('sans màj'); else if (i.update && i.update !== 'all') parts.push(upd(+i.update)); else if (g?.updates.length) parts.push('màj récente');
   if (i.dlc && g?.dlc.length) parts.push(`${g.dlc.length} DLC`);
+  if (i.seenShaders && i.platform === 'mac-app') parts.push('build rapide'); if (i.shaderFiles && i.platform === 'ios') parts.push('shaders séparés');
   if (i.noMotion) parts.push('sans mouvement'); if (i.romfsSeparate) parts.push('fichiers à part'); if (i.allowDamaged) parts.push('fichiers abîmés acceptés');
   return parts.join(' · ');
 }
@@ -477,7 +484,7 @@ async function bSubmit() {
   const items = [];
   for (const g of S.games) {
     const r = B.rows[g.id]; if (!r?.on || !g.hasBase) continue;
-    for (const platform of plats(r)) items.push({ id: g.id, platform, language: B.language, update: r.update, dlc: r.dlc, noMotion: false, romfsSeparate: false, allowDamaged: false });
+    for (const platform of plats(r)) items.push({ id: g.id, platform, language: B.language, update: r.update, dlc: r.dlc, noMotion: false, romfsSeparate: false, allowDamaged: false, seenShaders: false, shaderFiles: false });
   }
   if (!items.length) return;
   $('#bGo').disabled = true;
