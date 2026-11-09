@@ -291,7 +291,12 @@ function renderDetail() {
     if (g.builds.some(b => b.platform === 'mac-app')) {
       h += `<p class="muted small">Une fenêtre de réglages s'ouvre avant le jeu (langue, plein écran…) et retient tes choix. Tu peux la masquer (case « Show this window at launch », ou ici dans « Réglages du jeu ») ; maintiens ⌥ (Option) au lancement pour la revoir.</p>`;
       if (g.envTxt.length) h += `<div class="note warn small">Réglages forcés dans env.txt (grisés dans la fenêtre du jeu) : <code>${esc(g.envTxt.join('  '))}</code> <button class="link" onclick="editEnv('${g.id}')">modifier</button></div>`;
-      if (g.save.old) h += `<div class="row small"><span class="muted">${g.save.exists ? 'Sauvegarde nxnative présente.' : 'Pas encore de sauvegarde nxnative.'} Une ancienne sauvegarde NX2Apple existe.</span><button class="link" onclick="importSave('${g.id}', ${g.save.exists})">Reprendre l'ancienne sauvegarde</button><button class="link" onclick="openIt('${g.id}','mac-app','data')">Dossier de données</button></div>`;
+      if (g.save.exists || g.save.old) {
+        h += `<div class="row small"><span class="muted">${g.save.exists ? 'Sauvegarde présente.' : 'Pas encore de sauvegarde.'}${g.save.old ? ' Une ancienne sauvegarde NX2Apple existe.' : ''}</span>`;
+        if (g.save.exists) h += `<button class="link" onclick="openIt('${g.id}','mac-app','save')">Dossier de sauvegarde</button>`;
+        if (g.save.old) h += `<button class="link" onclick="importSave('${g.id}', ${g.save.exists})">Reprendre l'ancienne sauvegarde</button><button class="link" onclick="openIt('${g.id}','mac-app','data')">Dossier de données</button>`;
+        h += `</div>`;
+      }
     }
     h += `</div>`;
   }

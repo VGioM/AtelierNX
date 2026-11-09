@@ -957,6 +957,8 @@ class Handler(BaseHTTPRequestHandler):
                     target = str(Path(cfg['workDir']) / gid / 'atelier.log')
                 elif req.get('what') == 'data':
                     target = str(NX_SUPPORT / gid)
+                elif req.get('what') == 'save':
+                    target = str(NX_SUPPORT / gid / 'save')
                 if not target or not Path(target).exists():
                     return self.send(404, {'error': 'Introuvable.'})
                 if req.get('what') in ('log', 'buildlog'):
