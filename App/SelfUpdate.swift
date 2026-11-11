@@ -247,7 +247,13 @@ enum SelfUpdate {
         // Le chemin passe en $0 : rien n'est interprété par le shell.
         waiter.arguments = ["-c", "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; /usr/bin/open \"$0\"", app.path]
         try? waiter.run()
-        NSApp.terminate(nil)
+        // Pas d'appel direct : on est ici dans une tâche du MainActor, donc à
+        // l'intérieur de la file principale. Si l'app répond .terminateLater
+        // (Biblijeu sauvegarde avant de partir), terminate attend dans une
+        // boucle imbriquée qui ne vide plus la file principale : le travail
+        // asynchrone qui doit lui répondre ne s'exécute jamais et l'app reste
+        // ouverte indéfiniment. Passer par la boucle d'événements évite ça.
+        NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0)
     }
 
     // MARK: - Release GitHub
