@@ -3,7 +3,8 @@
 // Le même fichier vit dans Biblifilm, Biblijeu, Atelier NX et Recomps : une
 // correction faite ici se reporte dans les trois autres.
 //
-// Au lancement (au plus une fois par jour), l'app lit la dernière release de
+// Au lancement (au plus une fois par jour, sauf si la recherche automatique
+// est désactivée dans les réglages), l'app lit la dernière release de
 // son dépôt. Si elle est plus récente, elle propose de l'installer : le zip
 // est téléchargé, décompressé, vérifié, puis remplace l'app, qui se relance.
 // Un fichier téléchargé par l'app elle-même ne porte pas la quarantaine, donc
@@ -53,12 +54,31 @@ enum SelfUpdate {
     private static var busy = false
     private static let lastCheckKey = "SelfUpdate.lastCheck"
     private static let skippedKey = "SelfUpdate.skippedVersion"
+    /// Clé du réglage « Rechercher automatiquement les mises à jour » (vrai
+    /// par défaut). Exposée pour `@AppStorage` dans les vues de réglages.
+    static let automaticKey = "SelfUpdate.automatic"
+
+    /// Recherche automatique au lancement. Désactivée, seule l'entrée de menu
+    /// « Rechercher les mises à jour… » interroge GitHub.
+    static var automatic: Bool {
+        get { UserDefaults.standard.object(forKey: automaticKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: automaticKey) }
+    }
+
+    /// La version écartée par « Ignorer cette version », s'il y en a une.
+    /// Elle n'est plus proposée automatiquement, mais une recherche manuelle
+    /// la propose encore. nil l'oublie.
+    static var skippedVersion: String? {
+        get { UserDefaults.standard.string(forKey: skippedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: skippedKey) }
+    }
 
     /// À appeler une fois au lancement, avec le dépôt GitHub (« VGioM/Biblifilm »).
     static func start(repo: String) {
         self.repo = repo
         // Laisse la fenêtre s'ouvrir avant de solliciter le réseau.
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            guard automatic else { return }
             if let last = UserDefaults.standard.object(forKey: lastCheckKey) as? Date,
                Date().timeIntervalSince(last) < 20 * 3600 { return }
             Task { @MainActor in await check(interactive: false) }
@@ -71,6 +91,7 @@ enum SelfUpdate {
     }
 
     static let menuTitle = "Rechercher les mises à jour…"
+    static let automaticTitle = "Rechercher automatiquement les mises à jour"
 
     /// L'entrée de menu toute faite, pour les apps AppKit.
     static func menuItem() -> NSMenuItem {
@@ -79,9 +100,22 @@ enum SelfUpdate {
         return item
     }
 
+    /// L'entrée à cocher « Rechercher automatiquement les mises à jour »,
+    /// pour les apps AppKit sans fenêtre de réglages.
+    static func automaticMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: automaticTitle, action: #selector(MenuTarget.toggleAutomatic(_:)), keyEquivalent: "")
+        item.target = MenuTarget.shared
+        item.state = automatic ? .on : .off
+        return item
+    }
+
     private final class MenuTarget: NSObject {
         static let shared = MenuTarget()
         @objc func check() { SelfUpdate.checkNow() }
+        @objc func toggleAutomatic(_ sender: NSMenuItem) {
+            SelfUpdate.automatic.toggle()
+            sender.state = SelfUpdate.automatic ? .on : .off
+        }
     }
 
     static var appName: String {
@@ -115,7 +149,7 @@ enum SelfUpdate {
             }
             return
         }
-        if !interactive, UserDefaults.standard.string(forKey: skippedKey) == release.version { return }
+        if !interactive, skippedVersion == release.version { return }
 
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
@@ -131,7 +165,7 @@ enum SelfUpdate {
         case .alertFirstButtonReturn:
             await installAndRelaunch(release)
         case .alertThirdButtonReturn:
-            UserDefaults.standard.set(release.version, forKey: skippedKey)
+            skippedVersion = release.version
         default:
             break
         }

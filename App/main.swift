@@ -145,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         let appItem = NSMenuItem(); main.addItem(appItem)
         let appMenu = NSMenu()
         appMenu.addItem(SelfUpdate.menuItem())
+        appMenu.addItem(SelfUpdate.automaticMenuItem())
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Recharger", action: #selector(reload), keyEquivalent: "r")
         appMenu.addItem(.separator())
