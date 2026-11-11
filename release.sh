@@ -76,7 +76,7 @@ if LC_ALL=C grep -qaF "$HOME/" "$APP/Contents/MacOS/"*; then
     echo "✗ Le binaire contient encore des chemins de ce Mac."; git checkout build.sh; exit 1
 fi
 
-echo "▸ Commit et tag $TAG…"
+echo "▸ Commit et tag ${TAG}…"
 git add build.sh
 git commit -q -m "Version $VERSION" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git tag "$TAG"
