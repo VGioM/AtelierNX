@@ -14,7 +14,7 @@ Interface graphique simple pour [nxnative](https://github.com/seedds/nxnative) (
 - Builds en priorité basse (`nice -n 10`, réglable) : ils prennent le processeur libre sans faire ramer les autres apps.
 - Bouton « Jouer », journal du jeu, dossier de sauvegarde du jeu (pour en faire une copie), reprise des anciennes sauvegardes NX2Apple.
 - « Réglages du jeu » : les réglages de la fenêtre de lancement nxnative (liste lue dans `launcher.json`), pré-remplis via les choix enregistrés de l'app (`launcher.<VAR>`), sans les bloquer. Réglages par défaut appliqués automatiquement à chaque nouveau build Mac. `env.txt` reste accessible pour forcer un réglage.
-- Vérifie et installe les mises à jour de nxnative (`git pull`), et signale les jeux construits avec une ancienne version.
+- Vérifie et installe les mises à jour de nxnative (`git pull`), et signale les jeux construits avec une ancienne version : nombre de changements depuis le build, et ceux qui citent le jeu (son profil, son nom ou son identifiant dans le message), avec un lien vers chacun sur GitHub. Une app déplacée est retrouvée dans le dossier des apps des Réglages.
 - « Compatibles que tu n'as pas » : les jeux qui ont un profil nxnative et ne sont pas dans le dossier (branche distante lue par `git fetch` toutes les 6 h, variantes régionales fusionnées, « nouveau » pour les profils arrivés depuis la dernière mise à jour du clone), triés de A à Z ou par date d'arrivée du profil. Un clic ouvre le profil sur GitHub.
 
 ## Fonctionnement

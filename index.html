@@ -85,6 +85,7 @@ textarea { width: 100%; min-height: 110px; font: 12px ui-monospace, Menlo, monos
 .sortbar .seg button { padding: 2px 9px; font-size: 12px; }
 @media (max-width: 760px) { .brow { grid-template-columns: 22px 34px minmax(0, 1fr); } .brow > .opt { grid-column: 3; } }
 details summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
+ul.changes { margin: 4px 0 0; padding-left: 18px; } ul.changes li { margin: 3px 0; }
 @media (max-width: 760px) { main { grid-template-columns: 1fr; } #list { max-height: none; border-right: none; } #detail { max-height: none; padding: 16px; } .row label.k { width: 100%; } }
 </style>
 </head>
@@ -267,6 +268,18 @@ function gameOpts(g) {
   return opts[g.id];
 }
 
+// Ce qui a changé dans nxnative depuis un build (server.py game_changes) : le total, et les changements qui touchent ce jeu
+let CH_OPEN = false;
+function changesNote(c) {
+  const redo = "Reconstruire récupère les correctifs (l'extraction du jeu est réutilisée, c'est plus rapide).";
+  if (!c) return `<div class="note warn small">nxnative a changé depuis ce build. ${redo}</div>`;
+  const tot = `${c.total} changement${c.total > 1 ? 's' : ''} de nxnative depuis ce build`;
+  if (!c.game) return `<div class="note small">${tot}, aucun ne cite ce jeu : ce sont des changements généraux (moteur, autres jeux). Reconstruire n'est utile que si le jeu a un souci.</div>`;
+  const list = c.items.map(i => `<li><span class="muted">${esc(i.date)}</span> <span title="${esc(i.full)}">${esc(i.s)}</span> <button class="link" onclick="api('/api/commit-page',{h:'${i.h}'})">détail</button></li>`).join('');
+  return `<div class="note warn small">${tot}, dont <b>${c.game} qui ${c.game > 1 ? 'citent' : 'cite'} ce jeu</b>. ${redo}
+    <details ${CH_OPEN ? 'open' : ''} ontoggle="CH_OPEN=this.open"><summary>Voir ces changements (survol : message complet)</summary><ul class="changes">${list}</ul>${c.game > c.items.length ? `<div class="muted">… et ${c.game - c.items.length} plus anciens.</div>` : ''}</details></div>`;
+}
+
 function renderDetail() {
   if (sel === BATCH) return $('#bRows') ? bRenderRows() : renderBatch();   // rafraîchi : garde la recherche et le défilement
   const g = S.games.find(x => x.id === sel); if (!g) return;
@@ -281,7 +294,7 @@ function renderDetail() {
     h += `<div class="card"><h3>Prêt à jouer</h3>`;
     for (const b of g.builds) {
       h += `<div class="row"><b>${PLAT[b.platform]}</b><span class="muted small">construit le ${esc(b.built)} · langue ${esc(b.language)} · nxnative ${esc(b.commit)}</span></div>`;
-      if (b.stale) h += `<div class="note warn small">nxnative a changé depuis ce build. Reconstruire récupère les correctifs (l'extraction du jeu est réutilisée, c'est plus rapide).</div>`;
+      if (b.stale) h += changesNote(b.changes);
       h += `<div class="row">`;
       if (b.platform === 'mac-app') h += `<button class="primary" onclick="openIt('${g.id}','mac-app')">▶ Jouer</button>`;
       h += `<button onclick="openIt('${g.id}','${b.platform}',null,true)">Afficher dans le Finder</button>`;
@@ -462,7 +475,7 @@ function bRenderRows() {
   el.innerHTML = list.length ? list.map(g => {
     const r = bRow(g), p = bPlat(r), chips = [];
     chips.push(g.profile ? '<span class="chip ok">profil</span>' : '<span class="chip warn">sans profil</span>');
-    for (const b of g.builds) chips.push(`<span class="chip ${b.stale ? 'warn' : 'ok'}">${PLAT[b.platform]} ✓${b.stale ? ' (ancien)' : ''}</span>`);
+    for (const b of g.builds) chips.push(`<span class="chip ${b.stale ? 'warn' : 'ok'}">${PLAT[b.platform]} ✓${b.stale ? (b.changes?.game ? ` (ancien, ${b.changes.game} changement${b.changes.game > 1 ? 's' : ''} pour ce jeu)` : ' (ancien)') : ''}</span>`);
     if (S.queue.items.some(i => i.id === g.id)) chips.push('<span class="chip warn">en file</span>');
     const upSel = g.updates.length
       ? `<select onchange="bSet('${g.id}','update',this.value)"><option value="all" ${r.update === 'all' ? 'selected' : ''}>la plus récente (${upd(g.updates.at(-1).ver).replace('mise à jour ', '')})</option>${g.updates.slice(0, -1).map(u => `<option value="${u.ver}" ${String(r.update) === String(u.ver) ? 'selected' : ''}>${upd(u.ver)}</option>`).join('')}<option value="none" ${r.update === 'none' ? 'selected' : ''}>sans màj</option></select>`

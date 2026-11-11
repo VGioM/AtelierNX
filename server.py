@@ -100,6 +100,48 @@ def clean_name(fname):
     return n
 
 
+CHANGES = {}   # (jeu, commit du build, HEAD) -> résumé : l'historique ne change pas, seul HEAD avance
+
+
+def first_sentence(s, cap=260):
+    """Début d'un message de commit nxnative (souvent un long paragraphe sur une ligne)."""
+    m = re.search(r'(?<=[a-z0-9)`\'"])[.;:](\s)', s)
+    s = s[:m.start() + 1] if m and m.start() > 30 else s
+    return s if len(s) <= cap else s[:cap].rsplit(' ', 1)[0] + '…'
+
+
+def game_changes(cfg, gid, name, commit, head):
+    """Ce qui a changé dans nxnative depuis le build d'un jeu : le nombre de commits, et ceux qui le
+    concernent (son profil dm/games/<id>, ou son nom ou son identifiant dans le message)."""
+    key = (gid, commit, head)
+    if key in CHANGES:
+        return CHANGES[key]
+    code, n = git(cfg, 'rev-list', '--count', f'{commit}..{head}')
+    if code or not n.isdigit():
+        return None   # commit du build absent du clone (historique réécrit, autre clone)
+    names = {gid, name or ''}
+    for sep in (': ', ' - ', ' – '):   # « The Legend of Zelda: Link's Awakening » -> « Link's Awakening »
+        if name and sep in name:
+            names.add(name.split(sep, 1)[1])
+    names = sorted(x for x in names if len(x) >= 5)
+    fmt = ['--format=%H%x1f%cd%x1f%s', '--date=format:%d/%m']
+    seen, items = set(), []
+    outs = [git(cfg, 'log', *fmt, f'{commit}..{head}', '--', f'dm/games/{gid}')[1]]
+    if names:
+        outs.append(git(cfg, 'log', *fmt, '-i', '-F', *[f'--grep={x}' for x in names], f'{commit}..{head}')[1])
+    for out in outs:
+        for line in out.splitlines():
+            parts = line.split('\x1f')
+            if len(parts) == 3 and parts[0] not in seen:
+                seen.add(parts[0])
+                items.append({'h': parts[0][:8], 'date': parts[1], 's': first_sentence(parts[2]), 'full': parts[2][:4000]})
+    order = git(cfg, 'rev-list', f'{commit}..{head}')[1].splitlines()
+    rank = {h[:8]: i for i, h in enumerate(order)}
+    items.sort(key=lambda x: rank.get(x['h'], 0))   # du plus récent au plus ancien
+    CHANGES[key] = res = {'total': int(n), 'game': len(items), 'items': items[:25]}
+    return res
+
+
 def profile_name(cfg, gid):
     """Nom officiel du jeu, lu dans le titre du README de son profil nxnative."""
     try:
@@ -282,8 +324,10 @@ def scan(cfg):
     if len(cache) != n0:
         save_json(IDS_CACHE, cache)
     state = load_json(STATE, {})
+    state_moved = False
     profiles = Path(cfg['nxnative']) / 'dm/games'
     head = git(cfg, 'rev-parse', '--short', 'HEAD')[1] if (Path(cfg['nxnative']) / '.git').exists() else ''
+    head_full = git(cfg, 'rev-parse', 'HEAD')[1] if head else ''
     out = []
     for gid, g in games.items():
         g['bases'].sort(key=lambda e: (e['ext'] in ('.nsz', '.xcz'), e['rel']))   # un NSP/XCI plutôt que sa version compressée
@@ -295,8 +339,13 @@ def scan(cfg):
         st = state.get(gid, {})
         builds = []
         for plat, b in st.get('builds', {}).items():
+            moved = Path(cfg['outDir']) / Path(b['out']).name if cfg.get('outDir') else None
+            if not Path(b['out']).exists() and moved and moved.exists():   # app rangée ailleurs puis dossier des apps changé
+                b['out'] = str(moved); state_moved = True
             if Path(b['out']).exists():
-                builds.append({**b, 'platform': plat, 'stale': bool(head and b.get('commit') and b['commit'] != head)})
+                stale = bool(head and b.get('commit') and b['commit'] != head)
+                builds.append({**b, 'platform': plat, 'stale': stale,
+                               'changes': game_changes(cfg, gid, name, b['commit'], head_full) if stale else None})
         save_dst = NX_SUPPORT / gid / 'save'
         old_save = Path(cfg['oldSaveDir']) / gid
         out.append({
@@ -310,6 +359,15 @@ def scan(cfg):
                      'old': old_save.is_dir() and any(p for p in old_save.iterdir() if not p.name.startswith('.'))},
             'envTxt': read_env_txt(gid),
         })
+    if state_moved:
+        with LOCK:   # relu sous verrou : un build qui se termine écrit aussi state.json
+            st2 = load_json(STATE, {})
+            for gid, v in state.items():
+                for plat, b in v.get('builds', {}).items():
+                    cur = st2.get(gid, {}).get('builds', {}).get(plat)
+                    if cur and cur.get('commit') == b.get('commit'):
+                        cur['out'] = b['out']
+            save_json(STATE, st2)
     out.sort(key=lambda g: (not g['profile'], g['name'].lower()))
     fetch_banners([g['id'] for g in out if not g['icon']])
     return out, orphans, archives
@@ -1006,6 +1064,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not re.fullmatch(r'[0-9A-F]{16}', gid):
                     return self.send(400, {'error': 'identifiant invalide'})
                 subprocess.Popen(['open', f'https://github.com/seedds/nxnative/tree/main/dm/games/{gid}'])
+                return self.send(200, {'ok': True})
+            if u.path == '/api/commit-page':
+                h = req.get('h', '')
+                if not re.fullmatch(r'[0-9a-f]{7,40}', h):
+                    return self.send(400, {'error': 'commit invalide'})
+                subprocess.Popen(['open', f'https://github.com/seedds/nxnative/commit/{h}'])
                 return self.send(200, {'ok': True})
             if u.path == '/api/nx/pull':
                 if JOB.busy():
