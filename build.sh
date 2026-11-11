@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 APP="dist/Atelier NX.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -o "$APP/Contents/MacOS/AtelierNX" App/main.swift -framework Cocoa -framework WebKit
+swiftc -O -o "$APP/Contents/MacOS/AtelierNX" App/main.swift App/SelfUpdate.swift -framework Cocoa -framework WebKit
 cp server.py index.html "$APP/Contents/Resources/"
 [[ -f App/AppIcon.icns ]] && cp App/AppIcon.icns "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<'EOF'
@@ -25,7 +25,16 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>
 EOF
-codesign --force --sign - "$APP"
+# Certificat local s'il existe (./signing-cert.sh le crée) : c'est lui que la
+# mise à jour intégrée vérifie, et il permet à macOS de garder ses
+# autorisations d'une version à l'autre. Sinon, signature ad hoc.
+strip -S "$APP/Contents/MacOS/AtelierNX" 2>/dev/null || true
+IDENTITY="-"
+if security find-identity -p codesigning 2>/dev/null | grep -q "VGioM Local Signing"; then
+    IDENTITY="VGioM Local Signing"
+fi
+codesign --force --sign "$IDENTITY" "$APP"
+echo "Signé : $IDENTITY"
 echo "OK : $APP"
 if [[ "$1" == "install" ]]; then
   rm -rf "/Applications/Atelier NX.app"

@@ -41,7 +41,7 @@ Réglages et état : `~/Library/Application Support/AtelierNX/` (`config.json`, 
    /opt/homebrew/bin/python3.13 -m venv .venv
    .venv/bin/pip install lz4 capstone fonttools nsz pycryptodome
    ```
-3. Télécharger Atelier NX dans les [releases](https://github.com/VGioM/AtelierNX/releases) (ou le compiler, voir plus bas) et le mettre dans Applications. L'app est signée ad hoc : au premier lancement, clic droit → Ouvrir.
+3. Télécharger Atelier NX dans les [releases](https://github.com/VGioM/AtelierNX/releases) (ou le compiler, voir plus bas) et le mettre dans Applications. Au premier lancement, autorisez-la dans Réglages Système → Confidentialité et sécurité → « Ouvrir quand même » (l'app n'est pas notarisée par Apple). Ensuite, l'app vérifie elle-même au lancement s'il existe une nouvelle version et propose de l'installer (menu de l'app → « Rechercher les mises à jour… »).
 4. Dans **Réglages**, choisir le dossier des jeux Switch (NSP/XCI, sous-dossiers compris) et `prod.keys`.
 
 Valeurs par défaut : nxnative dans `~/nxnative`, Python = `~/nxnative/.venv/bin/python` (sinon le premier `python3.12+` de Homebrew), clés dans `~/.switch/prod.keys`. Les apps construites vont dans `<dossier des jeux>/Apps`, les fichiers de build dans `<dossier des jeux>/nxnative-build.noindex` (prévoir environ 2 × la taille du jeu + 10 Go) ; les deux se changent dans Réglages.
@@ -54,3 +54,23 @@ Valeurs par défaut : nxnative dans `~/nxnative`, Python = `~/nxnative/.venv/bin
 ```
 
 Sans l'app : `python3 server.py --open` ouvre la page dans le navigateur.
+
+## Publier une version
+
+```bash
+./signing-cert.sh        # une seule fois par Mac : crée le certificat local
+./release.sh 1.4.0       # build, tests, commit « Version 1.4.0 », tag, release GitHub
+./release.sh 1.4.0 notes.md   # avec des notes écrites à la main
+```
+
+La release contient `AtelierNX-<version>-macOS-arm64.zip`. Les apps déjà installées la
+trouvent via l'API GitHub et proposent de l'installer (`SelfUpdate.swift`, le même
+fichier dans Biblifilm, Biblijeu, Atelier NX et Recomps). Elles n'acceptent qu'une
+version signée avec le même certificat que la leur : il faut donc **garder ce
+certificat** (« VGioM Local Signing », dans le trousseau de session ; à exporter avec sa clé
+privée en lieu sûr). Une release signée avec un autre certificat devrait être
+réinstallée à la main par chacun.
+
+Les versions Linux et Windows à venir iront dans la même release, un fichier par
+plateforme : `<App>-<version>-linux-x86_64.tar.gz`, `<App>-<version>-windows-x64.zip`…
+La version Mac ne prend que le fichier marqué `macOS`.

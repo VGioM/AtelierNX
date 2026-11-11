@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         window.center()
         window.makeKeyAndOrderFront(nil)
         startServer()
+        SelfUpdate.start(repo: "VGioM/AtelierNX")
     }
 
     func pythonPath() -> String {
@@ -143,6 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         let main = NSMenu()
         let appItem = NSMenuItem(); main.addItem(appItem)
         let appMenu = NSMenu()
+        appMenu.addItem(SelfUpdate.menuItem())
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Recharger", action: #selector(reload), keyEquivalent: "r")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Masquer Atelier NX", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
