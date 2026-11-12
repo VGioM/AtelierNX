@@ -4,8 +4,10 @@
 // correction faite ici se reporte dans les trois autres.
 //
 // Au lancement (au plus une fois par jour, sauf si la recherche automatique
-// est désactivée dans les réglages), l'app lit la dernière release de
-// son dépôt. Si elle est plus récente, elle propose de l'installer : le zip
+// est désactivée dans les réglages), l'app lit les releases de son dépôt et
+// garde la plus récente qui contient un zip Mac (Mac et Linux partagent les
+// releases mais n'ont pas les mêmes numéros). Si elle est plus récente que
+// l'app en place, elle propose de l'installer : le zip
 // est téléchargé, décompressé, vérifié, puis remplace l'app, qui se relance.
 // Un fichier téléchargé par l'app elle-même ne porte pas la quarantaine, donc
 // macOS ne redemande pas « Ouvrir quand même ».
@@ -36,7 +38,7 @@ enum SelfUpdate {
         var errorDescription: String? {
             switch self {
             case .network(let why): return "GitHub n'a pas répondu correctement (\(why))."
-            case .noZip:            return "La dernière release ne contient pas encore de version Mac."
+            case .noZip:            return "Aucune release ne contient encore de version Mac."
             case .noApp:            return "Le fichier téléchargé ne contient pas d'application."
             case .wrongApp:         return "Le fichier téléchargé contient une autre application."
             case .notNewer:         return "Le fichier téléchargé n'est pas plus récent que la version installée."
@@ -258,22 +260,39 @@ enum SelfUpdate {
 
     // MARK: - Release GitHub
 
-    private struct GitHubRelease: Decodable {
+    struct GitHubRelease: Decodable {
         let tag_name: String
         let html_url: String
         let body: String?
+        let draft: Bool
+        let prerelease: Bool
         let assets: [Asset]
         struct Asset: Decodable {
             let name: String
             let browser_download_url: String
             let size: Int
         }
+
+        enum CodingKeys: String, CodingKey { case tag_name, html_url, body, draft, prerelease, assets }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            tag_name = try c.decode(String.self, forKey: .tag_name)
+            html_url = try c.decode(String.self, forKey: .html_url)
+            body = try c.decodeIfPresent(String.self, forKey: .body)
+            draft = try c.decodeIfPresent(Bool.self, forKey: .draft) ?? false
+            prerelease = try c.decodeIfPresent(Bool.self, forKey: .prerelease) ?? false
+            assets = try c.decode([Asset].self, forKey: .assets)
+        }
     }
 
-    /// La dernière release publiée (ni brouillon ni préversion). `feed`
-    /// remplace l'adresse de l'API, pour les tests.
+    /// La release Mac la plus récente du dépôt (ni brouillon ni préversion).
+    /// Mac et Linux partagent les releases sans partager les numéros : la
+    /// dernière release peut n'avoir qu'une AppImage, on lit donc la liste
+    /// et on garde la plus haute qui a un zip Mac. `feed` remplace l'adresse
+    /// de l'API (un tableau JSON), pour les tests.
     static func latest(repo: String, feed: URL? = nil) async throws -> Release {
-        let url = feed ?? URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
+        let url = feed ?? URL(string: "https://api.github.com/repos/\(repo)/releases?per_page=30")!
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("\(appName.replacingOccurrences(of: " ", with: ""))-updater", forHTTPHeaderField: "User-Agent")
@@ -283,18 +302,30 @@ enum SelfUpdate {
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             throw Failure.network("code \(http.statusCode)")
         }
-        let release: GitHubRelease
-        do { release = try JSONDecoder().decode(GitHubRelease.self, from: data) }
+        let releases: [GitHubRelease]
+        do { releases = try JSONDecoder().decode([GitHubRelease].self, from: data) }
         catch { throw Failure.network("réponse illisible") }
 
-        guard let name = macZip(among: release.assets.map(\.name)),
-              let asset = release.assets.first(where: { $0.name == name }),
+        guard let (release, asset) = pick(releases),
               let download = URL(string: asset.browser_download_url) else { throw Failure.noZip }
         return Release(version: clean(release.tag_name),
                        notes: readableNotes(release.body ?? ""),
                        page: URL(string: release.html_url) ?? URL(string: "https://github.com/\(repo)/releases")!,
                        download: download,
                        size: asset.size)
+    }
+
+    /// Parmi les releases, la plus haute (par numéro de tag) qui n'est ni
+    /// brouillon ni préversion et qui contient un zip Mac, avec ce zip.
+    static func pick(_ releases: [GitHubRelease]) -> (GitHubRelease, GitHubRelease.Asset)? {
+        var best: (GitHubRelease, GitHubRelease.Asset)?
+        for release in releases where !release.draft && !release.prerelease {
+            guard let name = macZip(among: release.assets.map(\.name)),
+                  let asset = release.assets.first(where: { $0.name == name }) else { continue }
+            if let current = best, !isNewer(clean(release.tag_name), than: clean(current.0.tag_name)) { continue }
+            best = (release, asset)
+        }
+        return best
     }
 
     /// Le zip Mac de la release.
