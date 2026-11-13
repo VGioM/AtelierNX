@@ -4,7 +4,7 @@
 Écoute sur 127.0.0.1 uniquement ; chaque requête /api doit porter le jeton injecté dans la page.
 Lancé par Atelier NX.app (ou à la main : python3 server.py --open).
 """
-import json, os, plistlib, re, secrets, shutil, signal, struct, subprocess, sys, threading, time, argparse, webbrowser
+import json, os, plistlib, re, secrets, shlex, shutil, signal, struct, subprocess, sys, threading, time, argparse, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -78,6 +78,117 @@ def tool_env():
 def git(cfg, *args, timeout=120):
     r = subprocess.run(['git', '-C', cfg['nxnative'], *args], capture_output=True, text=True, timeout=timeout, env=tool_env())
     return r.returncode, (r.stdout + r.stderr).strip()
+
+
+# ---------- modules Python de nxnative ----------
+# nxnative ajoute parfois un module Python obligatoire (zbic en novembre 2026) : sans lui, chaque build échoue dès le départ.
+# La liste est lue dans son script (check_prereqs : modules vérifiés et ligne « pip install … »), et les modules manquants
+# sont installés dans le Python des réglages : au lancement, après une mise à jour de nxnative et avant chaque build.
+# Filet de sécurité : un build qui échoue quand même sur un module manquant l'installe et relance le jeu une fois.
+NX_SCRIPT = 'scripts/build_ipa_from_nsp.py'
+FALLBACK_MODULES = ['lz4.block', 'capstone', 'fontTools', 'zbic', 'compression.zstd|backports.zstd']
+FALLBACK_PIP = ['lz4', 'capstone>=5,<6', 'fonttools', 'zbic', 'backports.zstd']
+PREREQ = {'key': None, 'missing': [], 'error': ''}   # dernier état connu, montré dans la page
+PREREQ_LOCK = threading.Lock()
+MISSING_RE = re.compile(r'missing modules: ([\w., ]+?)\s*(?:\(pip install ([^;)]+)|$)')
+
+
+class PrereqError(ValueError):
+    pass
+
+
+def nx_requirements(cfg):
+    """(modules, paquets pip) que demande nxnative ; « a|b » = l'un ou l'autre suffit."""
+    try:
+        src = (Path(cfg['nxnative']) / NX_SCRIPT).read_text()
+    except OSError:
+        return FALLBACK_MODULES, FALLBACK_PIP
+    i = src.find('def check_prereqs')
+    if i < 0:
+        return FALLBACK_MODULES, FALLBACK_PIP
+    j = src.find('\ndef ', i + 1)
+    body = src[i:j if j > 0 else None]
+    m = re.search(r'for m in \(([^)]*)\) if not _importable', body)
+    mods = re.findall(r"'([\w.]+)'", m.group(1)) if m else FALLBACK_MODULES[:-1]
+    if 'compression.zstd' in body and 'backports.zstd' in body:   # zstd : intégré à Python 3.14, sinon backports.zstd
+        mods.append('compression.zstd|backports.zstd')
+    m = re.search(r'pip install ([^;)\n]+)', body)
+    try:
+        pips = shlex.split(m.group(1)) if m else FALLBACK_PIP
+    except ValueError:
+        pips = FALLBACK_PIP
+    return mods, pips
+
+
+def missing_modules(cfg, mods):
+    code = ('import importlib.util as u, json, sys\n'
+            'def ok(m):\n try: return u.find_spec(m) is not None\n except Exception: return False\n'
+            'print(json.dumps([g.split("|")[-1] for g in sys.argv[1:] if not any(ok(m) for m in g.split("|"))]))')
+    r = subprocess.run([cfg['python'], '-I', '-c', code, *mods], capture_output=True, text=True, timeout=60, env=tool_env())
+    if r.returncode:
+        raise PrereqError(f"Python des réglages inutilisable ({cfg['python']}) : {(r.stderr or r.stdout).strip()[-300:]}")
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def pip_for(missing, pips):
+    """Paquets pip à installer pour ces modules (lz4.block → lz4, fontTools → fonttools…)."""
+    out = []
+    for mod in missing:
+        names = {mod.lower(), mod.split('.')[0].lower()}
+        pkg = next((p for p in pips if re.split(r'[<>=!~\[ ]', p, maxsplit=1)[0].lower() in names), mod.split('.')[0])
+        if pkg not in out:
+            out.append(pkg)
+    return out
+
+
+def pip_install(cfg, pkgs):
+    py, env = cfg['python'], tool_env()
+    uv = shutil.which('uv', path=env['PATH'])
+    if uv:   # les venv créés par uv n'ont pas pip
+        cmd = [uv, 'pip', 'install', '--python', py, *pkgs]
+    else:
+        if subprocess.run([py, '-m', 'pip', '--version'], capture_output=True, env=env, timeout=60).returncode:
+            subprocess.run([py, '-m', 'ensurepip', '--upgrade'], capture_output=True, env=env, timeout=300)
+        cmd = [py, '-m', 'pip', 'install', *pkgs]
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=900)
+    return r.returncode == 0, (r.stdout + r.stderr).strip()[-600:]
+
+
+def ensure_prereqs(cfg, say=lambda msg, err=False: None, force=False, extra=None):
+    """Installe ce qui manque ; renvoie la liste des modules installés. PrereqError si quelque chose manque encore.
+    Le résultat est gardé tant que ni le Python ni le script de nxnative ne changent. extra : (modules, paquets) lus
+    dans le message d'erreur d'un build."""
+    with PREREQ_LOCK:
+        try:
+            mtime = (Path(cfg['nxnative']) / NX_SCRIPT).stat().st_mtime
+        except OSError:
+            mtime = None
+        key = (cfg['python'], cfg['nxnative'], mtime)
+        if not force and PREREQ['key'] == key and not PREREQ['missing']:
+            return []
+        mods, pips = nx_requirements(cfg)
+        if extra:
+            mods = mods + [m for m in extra[0] if m not in mods]; pips = extra[1] + pips
+        missing = []
+        try:
+            missing = missing_modules(cfg, mods)
+            installed = []
+            if missing:
+                pkgs = pip_for(missing, pips)
+                say(f"nxnative a besoin de modules Python absents : {', '.join(missing)}. Installation de {' '.join(pkgs)}…")
+                ok, outp = pip_install(cfg, pkgs)
+                still = missing_modules(cfg, mods)
+                if still:
+                    raise PrereqError(f"Modules Python manquants pour nxnative : {', '.join(still)}. Installation impossible"
+                                      f" ({shlex.join([cfg['python'], '-m', 'pip', 'install', *pip_for(still, pips)])}) :\n{outp}")
+                installed = missing
+                say(f"Modules installés : {', '.join(missing)}")
+            PREREQ.update(key=key, missing=[], error='')
+            return installed
+        except PrereqError as e:
+            PREREQ.update(key=key, missing=missing or ['?'], error=str(e))
+            say(str(e), True)
+            raise
 
 
 # ---------- bibliothèque ----------
@@ -718,14 +829,26 @@ def kick():
                 start_build(config(), item)
                 JOB.item = item   # sous QLOCK : finish_item (fil du build) attend que ce soit fait
                 return
+            except PrereqError:   # modules Python impossibles à installer : tous les jeux échoueraient, on attend
+                q = queue(); q['items'].insert(0, item); q['paused'] = True; save_queue(q)
+                return
             except Exception as e:
                 q = queue()
                 q['history'].append({**item, 'ok': False, 'error': str(e), 'ended': time.time()}); save_queue(q)
 
 
-def finish_item(ok, code, cancelled):
+def finish_item(ok, code, cancelled, missing=None):
     with QLOCK:
         item, JOB.item = JOB.item, None
+        if item and not ok and not cancelled and missing and not item.get('prereqRetry'):
+            # échec sur un module manquant que la vérification n'a pas vu : l'installer et relancer le jeu une fois
+            try:
+                if ensure_prereqs(config(), say=lambda m, err=False: JOB.push({'ev': 'say', 'msg': m, 'err': err}),
+                                  force=True, extra=missing):
+                    q = queue(); q['items'].insert(0, {**item, 'prereqRetry': True}); save_queue(q)
+                    item = None
+            except PrereqError:
+                q = queue(); q['paused'] = True; save_queue(q)
         if item:
             q = queue()
             q['history'].append({**item, 'ok': ok, 'code': code, 'cancelled': cancelled, 'ended': time.time(),
@@ -768,6 +891,13 @@ def start_build(cfg, req):
         JOB.events, JOB.result, JOB.cancelled = [], None, False
         JOB.info = {'id': game['id'], 'name': game['name'], 'platform': platform, 'language': lang,
                     'started': time.time(), 'out': str(out), 'log': str(log)}
+    try:
+        ensure_prereqs(cfg, say=lambda m, err=False: JOB.push({'ev': 'say', 'msg': m, 'err': err}))
+    except PrereqError:
+        with JOB.cond:
+            JOB.result = {'ok': False, 'code': None, 'out': str(out), 'cancelled': False}
+        JOB.push({'ev': 'done', 'ok': False, 'code': None, 'cancelled': False})
+        raise
     head = git(cfg, 'rev-parse', '--short', 'HEAD')[1]
     JOB.push({'ev': 'say', 'msg': f"Fichiers utilisés : " + ', '.join(p['name'] for p in picks)})
     JOB.push({'ev': 'say', 'msg': f"nxnative {head} · {platform} · langue {lang}" + (' · priorité basse' if nice else '')})
@@ -787,6 +917,7 @@ def pump(proc, log, cfg, game, platform, lang, out, head):
             if line:
                 JOB.push({'ev': 'say', 'msg': line, 'err': True})
     t = threading.Thread(target=read_err, daemon=True); t.start()
+    missing = None
     for line in proc.stdout:
         lf.write(line); lf.flush()
         line = line.strip()
@@ -796,6 +927,12 @@ def pump(proc, log, cfg, game, platform, lang, out, head):
             ev = json.loads(line)
         except ValueError:
             ev = {'ev': 'say', 'msg': line}
+        m = MISSING_RE.search(str(ev.get('msg', ''))) if ev.get('ev') == 'say' else None
+        if m:
+            try:
+                missing = ([x.strip() for x in m.group(1).split(',') if x.strip()], shlex.split(m.group(2) or ''))
+            except ValueError:
+                missing = ([x.strip() for x in m.group(1).split(',') if x.strip()], [])
         JOB.push(ev)
     code = proc.wait(); t.join(timeout=5)
     ok = code == 0 and Path(out).exists()
@@ -820,7 +957,7 @@ def pump(proc, log, cfg, game, platform, lang, out, head):
     with JOB.cond:
         JOB.result = {'ok': ok, 'code': code, 'out': out, 'cancelled': JOB.cancelled}
     JOB.push({'ev': 'done', 'ok': ok, 'code': code, 'cancelled': JOB.cancelled})
-    finish_item(ok, code, JOB.cancelled)
+    finish_item(ok, code, JOB.cancelled, missing)
 
 
 UNZIPPING = set()
@@ -923,6 +1060,7 @@ class Handler(BaseHTTPRequestHandler):
                 'config': cfg, 'games': games, 'orphans': orphans, 'archives': archives, 'unzipping': sorted(UNZIPPING), 'catalog': catalog,
                 'rom': bool(cfg['romDir']) and Path(cfg['romDir']).is_dir(), 'keys': Path(cfg['keys']).is_file(),
                 'nxnative': {'ok': nx_ok, 'head': head},
+                'prereqs': {'missing': PREREQ['missing'], 'error': PREREQ['error']},
                 'job': {'busy': JOB.busy(), 'info': JOB.info, 'result': JOB.result, 'item': JOB.item},
                 'queue': queue(),
             })
@@ -1076,10 +1214,31 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(409, {'error': 'Attends la fin du build en cours.'})
                 code, outp = git(cfg, 'pull', '--ff-only', '--autostash', timeout=600)
                 build_catalog(cfg, fetch=False)   # les « nouveau » disparaissent une fois le clone à jour
-                return self.send(200, {'ok': code == 0, 'msg': outp})
+                try:
+                    installed = ensure_prereqs(cfg)   # la nouvelle version peut demander un module de plus
+                    mods = f"Modules Python installés : {', '.join(installed)}." if installed else ''
+                except PrereqError as e:
+                    mods = str(e)
+                return self.send(200, {'ok': code == 0, 'msg': outp, 'modules': mods})
+            if u.path == '/api/prereqs/install':
+                try:
+                    installed = ensure_prereqs(cfg, force=True)
+                except PrereqError as e:
+                    return self.send(200, {'ok': False, 'msg': str(e)})
+                with QLOCK:
+                    q = queue(); q['paused'] = False; save_queue(q)
+                kick()
+                return self.send(200, {'ok': True, 'installed': installed})
             return self.send(404, {'error': 'inconnu'})
         except Exception as e:
             return self.send(400, {'error': str(e)})
+
+
+def _quiet(f, *a):
+    try:
+        f(*a)
+    except Exception:
+        pass   # l'erreur reste dans PREREQ et s'affiche dans la page
 
 
 def migrate_workdir(cfg):
@@ -1121,6 +1280,7 @@ def main():
     save_json(SUPPORT / 'server.json', {'port': port, 'pid': os.getpid()})
     migrate_workdir(config())
     threading.Thread(target=catalog_loop, daemon=True).start()
+    threading.Thread(target=lambda: _quiet(ensure_prereqs, config()), daemon=True).start()   # vérifié dès le lancement
     threading.Timer(2.0, kick).start()         # reprend une file laissée non vide (sauf si elle est en pause)
     print(f'PORT {port}', flush=True)
     if a.open:
