@@ -227,6 +227,7 @@ function renderList() {
   const item = g => {
     const chips = [];
     if (!g.hasBase) chips.push('<span class="chip err">jeu de base absent</span>');
+    if (g.base?.ext === '.nup') chips.push(`<span class="chip">NUP</span>`);
     if (g.updates.length) chips.push(`<span class="chip">màj</span>`);
     if (g.dlc.length) chips.push(`<span class="chip">${g.dlc.length} DLC</span>`);
     for (const b of g.builds) chips.push(`<span class="chip ${b.stale ? 'warn' : 'ok'}">${PLAT[b.platform]} ✓</span>`);
@@ -264,7 +265,7 @@ function sortCat(list) {
 function setCatSort(k) { catSort = k; store.set('catSort', k); const y = $('#list').scrollTop; renderList(); $('#list').scrollTop = y; }
 
 function gameOpts(g) {
-  if (!opts[g.id]) opts[g.id] = { platform: 'mac-app', language: S.config.language || 'fr', update: g.updates.length ? 'all' : 'none', dlc: true, noMotion: false, romfsSeparate: false, allowDamaged: false, seenShaders: false, shaderFiles: false };
+  if (!opts[g.id]) opts[g.id] = { platform: 'mac-app', language: S.config.language || 'fr', update: g.updates.length ? 'all' : 'none', dlc: true, noMotion: false, romfsSeparate: false, allowDamaged: false, seenShaders: false, shaderFiles: false, showFps: true };
   return opts[g.id];
 }
 
@@ -319,18 +320,21 @@ function renderDetail() {
   if (!g.hasBase) h += `<div class="note err">Le jeu de base n'est pas dans le dossier : impossible de construire.</div>`;
   h += `<div class="row"><label class="k">Pour</label><span class="seg">${Object.entries(PLAT).map(([k, v]) => `<button class="${o.platform === k ? 'on' : ''}" onclick="setOpt('platform','${k}')">${v}</button>`).join('')}</span></div>`;
   h += `<div class="row"><label class="k">Langue du jeu</label><select onchange="setOpt('language',this.value)">${LANGS.map(([c, n]) => `<option value="${c}" ${o.language === c ? 'selected' : ''}>${n}</option>`).join('')}</select><span class="muted small">modifiable ensuite dans la fenêtre du jeu</span></div>`;
-  h += `<div class="row"><label class="k">Mise à jour</label><select onchange="setOpt('update',this.value)">`
+  const nup = g.base?.ext === '.nup' ? g.base.nup : null;
+  if (nup) h += `<div class="note small">Fichier NUP : le jeu, ses mises à jour et ses DLC sont dans un seul fichier, sans besoin de <code>prod.keys</code>. nxnative prend la mise à jour la plus récente${nup.versions.length ? ` (${upd(Math.max(...nup.versions))})` : ''}${nup.dlc ? ` et les ${nup.dlc} DLC` : ''}.</div>`;
+  else h += `<div class="row"><label class="k">Mise à jour</label><select onchange="setOpt('update',this.value)">`
     + (g.updates.length ? `<option value="all" ${o.update === 'all' ? 'selected' : ''}>la plus récente (${upd(newest.ver)})</option>` + g.updates.slice(0, -1).map(u => `<option value="${u.ver}" ${String(o.update) === String(u.ver) ? 'selected' : ''}>${upd(u.ver)}</option>`).join('') : '')
     + `<option value="none" ${o.update === 'none' ? 'selected' : ''}>aucune (jeu de base seul)</option></select></div>`;
-  if (g.dlc.length) h += `<div class="row"><label class="k">DLC</label><label><input type="checkbox" ${o.dlc ? 'checked' : ''} onchange="setOpt('dlc',this.checked)"> inclure les ${g.dlc.length} DLC</label></div>`;
+  if (g.dlc.length && !nup) h += `<div class="row"><label class="k">DLC</label><label><input type="checkbox" ${o.dlc ? 'checked' : ''} onchange="setOpt('dlc',this.checked)"> inclure les ${g.dlc.length} DLC</label></div>`;
   h += `<details><summary>Options avancées</summary>
     <div class="row"><label><input type="checkbox" ${o.noMotion ? 'checked' : ''} onchange="setOpt('noMotion',this.checked)"> Sans détection de mouvement (si les commandes gyroscopiques font n'importe quoi)</label></div>
     ${o.platform === 'ios' ? `<div class="row"><label><input type="checkbox" ${o.romfsSeparate ? 'checked' : ''} onchange="setOpt('romfsSeparate',this.checked)"> Fichiers du jeu à part (IPA plus petite, à copier une fois sur l'iPhone)</label></div>
-    <div class="row"><label><input type="checkbox" ${o.shaderFiles ? 'checked' : ''} onchange="setOpt('shaderFiles',this.checked)"> Shaders en fichiers séparés (pour AltServer, qui ne copie pas un fichier de plus de 2 Go ; avec « Fichiers du jeu à part »)</label></div>` : ''}
+    <div class="row"><label><input type="checkbox" ${o.shaderFiles ? 'checked' : ''} onchange="setOpt('shaderFiles',this.checked)"> Shaders en fichiers séparés (pour AltServer, qui ne copie pas un fichier de plus de 2 Go ; avec « Fichiers du jeu à part »)</label></div>
+    <div class="row"><label><input type="checkbox" ${o.showFps !== false ? 'checked' : ''} onchange="setOpt('showFps',this.checked)"> Compteur d'images en haut à gauche au démarrage (se coupe ensuite dans le menu du jeu, roue dentée)</label></div>` : ''}
     ${o.platform === 'mac-app' ? `<div class="row"><label><input type="checkbox" ${o.seenShaders ? 'checked' : ''} onchange="setOpt('seenShaders',this.checked)"> Build rapide : seulement les shaders vus pendant les tests de nxnative (quelques minutes au lieu d'heures ; des zones peuvent s'afficher sans certains effets jusqu'à un build complet)</label></div>` : ''}
     <div class="row"><label><input type="checkbox" ${o.allowDamaged ? 'checked' : ''} onchange="setOpt('allowDamaged',this.checked)"> Continuer malgré des fichiers endommagés</label></div>
   </details>`;
-  const files = [g.base, ...(o.update === 'all' ? g.updates : g.updates.filter(u => String(u.ver) === String(o.update))), ...(o.dlc ? g.dlc : [])].filter(Boolean);
+  const files = nup ? [g.base] : [g.base, ...(o.update === 'all' ? g.updates : g.updates.filter(u => String(u.ver) === String(o.update))), ...(o.dlc ? g.dlc : [])].filter(Boolean);
   h += `<ul class="files">${files.map(f => `<li>${esc(f.rel)} <span>(${gb(f.size)})</span></li>`).join('')}</ul>`;
   if (g.otherBases.length) h += `<div class="note warn small">Plusieurs copies du jeu de base ; celle utilisée est la première ci-dessus. Autres : ${g.otherBases.map(b => esc(b.rel)).join(', ')}</div>`;
   h += `<p class="muted small">Premier build : 30 à 60 min. Les suivants sont bien plus rapides. Place nécessaire : environ 2 × la taille du jeu + 10 Go sur le disque du dossier de travail.</p>`;
@@ -339,12 +343,28 @@ function renderDetail() {
   const label = inQ ? 'Mettre à jour dans la file' : waiting ? `Ajouter à la file (${S.queue.items.length + 1}ᵉ)` : 'Construire';
   h += `<div class="row"><button class="primary" ${!g.hasBase ? 'disabled' : ''} onclick="build('${g.id}')">${label}</button>${waiting && !inQ ? '<span class="muted small">démarrera tout seul après les builds en cours</span>' : ''}${inQ ? '<span class="muted small">ce jeu est déjà dans la file : ses options seront remplacées</span>' : ''}</div></div>`;
 
+  // Place disque des fichiers de build (calculée à l'ouverture du jeu, gardée ensuite)
+  if (SPACE[g.id]?.total) {
+    const sp = SPACE[g.id];
+    h += `<div class="card"><h3>Fichiers de build</h3><div class="row small"><span>${gb(sp.total)} sur le disque${sp.obsolete ? `, dont <b>${gb(sp.obsolete)} que nxnative n'utilise plus</b>` : ''}.</span></div>
+      <p class="muted small">Ils servent seulement à reconstruire plus vite (jeu déjà extrait, shaders déjà traduits). Le jeu construit n'en a pas besoin pour fonctionner.</p>
+      <div class="row">${sp.obsolete ? `<button onclick="cleanSpace('${g.id}','obsolete')">Supprimer les fichiers inutilisés</button>` : ''}<button ${mine && S.job.busy ? 'disabled' : ''} onclick="cleanSpace('${g.id}','all')">Tout supprimer</button></div></div>`;
+  } else if (!SPACE[g.id]) loadSpace(g.id);
+
   // Suivi
   if (mine && (S.job.busy || live.stages.length || live.log.length)) h += `<div class="card" id="progress"></div>`;
   $('#detail').innerHTML = h;
   if ($('#progress')) renderProgress();
 }
 
+const SPACE = {};
+async function loadSpace(id) { SPACE[id] = { loading: true }; try { SPACE[id] = await api('/api/space?id=' + id); } catch { SPACE[id] = { total: 0 }; } if (sel === id) renderDetail(); }
+async function cleanSpace(id, what) {
+  const g = S.games.find(x => x.id === id);
+  if (what === 'all' && !confirm(`Supprimer tous les fichiers de build de « ${g?.name || id} » (${gb(SPACE[id]?.total || 0)}) ?\n\nL'app construite et la sauvegarde ne sont pas touchées. Le prochain build devra réextraire le jeu et retraduire ses shaders : il sera aussi long qu'un premier build.`)) return;
+  try { const r = await api('/api/space/clean', { id, what }); alertBox(r.freed ? `${gb(r.freed)} libérés.` : 'Rien à supprimer.'); } catch (e) { alertBox(e.message); }
+  delete SPACE[id]; renderDetail();
+}
 function setOpt(k, v) { gameOpts(S.games.find(x => x.id === sel))[k] = v; renderDetail(); }
 
 function renderProgress() {
@@ -384,7 +404,7 @@ function follow() {
   if (es) es.close();
   live = { stages: [], cur: null, prog: null, log: [], done: null }; since = 0;
   es = new EventSource(`/api/events?since=0&token=${TOKEN}`);
-  es.onmessage = m => { onEvent(JSON.parse(m.data)); if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderQueue(); if (S.job.info?.id === sel) { if (!$('#progress')) renderDetail(); else renderProgress(); } }); if (live.done) { es.close(); es = null; } };
+  es.onmessage = m => { const ev = JSON.parse(m.data); if (ev.ev === 'done' && S.job.info) delete SPACE[S.job.info.id]; onEvent(ev); if (!raf) raf = requestAnimationFrame(() => { raf = 0; renderQueue(); if (S.job.info?.id === sel) { if (!$('#progress')) renderDetail(); else renderProgress(); } }); if (live.done) { es.close(); es = null; } };
 }
 
 async function build(id) {
@@ -402,6 +422,7 @@ function itemSummary(i) {
   if (i.update === 'none') parts.push('sans màj'); else if (i.update && i.update !== 'all') parts.push(upd(+i.update)); else if (g?.updates.length) parts.push('màj récente');
   if (i.dlc && g?.dlc.length) parts.push(`${g.dlc.length} DLC`);
   if (i.seenShaders && i.platform === 'mac-app') parts.push('build rapide'); if (i.shaderFiles && i.platform === 'ios') parts.push('shaders séparés');
+  if (i.showFps === false && i.platform === 'ios') parts.push('sans compteur d\'images');
   if (i.noMotion) parts.push('sans mouvement'); if (i.romfsSeparate) parts.push('fichiers à part'); if (i.allowDamaged) parts.push('fichiers abîmés acceptés');
   return parts.join(' · ');
 }
@@ -556,10 +577,34 @@ $('#btnSettings').onclick = () => {
   const d = S.config.gameDefaults || {};
   $('#settingsForm').innerHTML += `<h3 style="margin:18px 0 4px">Réglages par défaut des jeux</h3><p class="muted small" style="margin-top:0">Pré-remplis dans la fenêtre de chaque jeu au moment où tu le construis pour Mac (modifiables ensuite dans le jeu). Pour un jeu déjà construit : « Réglages du jeu… » → « Appliquer mes réglages par défaut ».</p>`
     + GLOBAL_DEFAULTS.map(([k, opts, note, label]) => `<div class="row"><label class="k">${esc(label || FR[k][0])}</label><select id="gd_${k.replace('.', '_')}"><option value="">Défaut du jeu</option>${opts.map(([v, l]) => `<option value="${v}" ${d[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select>${note ? `<span class="muted small">${note}</span>` : ''}</div>`).join('');
+  $('#settingsForm').innerHTML += `<h3 style="margin:18px 0 4px">Place disque des builds</h3>
+    <p class="muted small" style="margin-top:0">nxnative garde dans le dossier de travail l'extraction de chaque jeu et ses shaders traduits, pour reconstruire plus vite. Ce qu'il n'utilise plus va dans un dossier « obsolete », vidé seulement au build réussi suivant.</p>
+    <div class="row"><label><input type="checkbox" id="cf_cleanObsolete" ${S.config.cleanObsolete !== '0' ? 'checked' : ''}> Supprimer les fichiers inutilisés (« obsolete ») après chaque build réussi</label></div>
+    <div class="row"><label><input type="checkbox" id="cf_cleanAfterBuild" ${S.config.cleanAfterBuild === '1' ? 'checked' : ''}> Supprimer <b>tous</b> les fichiers de build d'un jeu après son build réussi (« obsolete » compris) : beaucoup de place gagnée, mais chaque reconstruction repart de zéro (30 à 60 min). Sauf iPhone avec « fichiers du jeu à part », qui en a besoin pour la copie sur le téléphone.</label></div>
+    <div class="row"><button onclick="spaceAll(this)">Calculer la place utilisée</button><button onclick="cleanAllBuilds(this)">Supprimer tous les fichiers de build…</button></div><div id="spaceAll"></div>`;
   dlgSettings.showModal();
 };
+async function spaceAll(btn) {
+  btn.disabled = true; btn.textContent = 'Calcul…';
+  try {
+    const { games } = await api('/api/space');
+    const tot = games.reduce((n, x) => n + x.total, 0), obs = games.reduce((n, x) => n + x.obsolete, 0);
+    $('#spaceAll').innerHTML = `<div class="small" style="margin:6px 0">${gb(tot)} au total${obs ? `, dont ${gb(obs)} inutilisés <button class="link" onclick="cleanAll(this)">supprimer les fichiers inutilisés de tous les jeux</button>` : ', aucun fichier inutilisé'}.</div>
+      <ul class="files" style="max-height:180px;overflow:auto">${games.map(x => `<li>${esc(x.name || x.id)} <span>(${gb(x.total)}${x.obsolete ? ', dont ' + gb(x.obsolete) + ' inutilisés' : ''})</span></li>`).join('')}</ul>
+      <p class="muted small">Pour un seul jeu : sa fiche → « Fichiers de build » → « Tout supprimer ».</p>`;
+  } catch (e) { $('#spaceAll').textContent = e.message; }
+  btn.disabled = false; btn.textContent = 'Recalculer';
+}
+async function cleanAllBuilds(b) {
+  if (!confirm("Supprimer les fichiers de build de tous les jeux ?\n\nLes apps construites, les sauvegardes et tes fichiers de jeux ne sont pas touchés : tout continue de marcher. Seulement, le prochain build de chaque jeu devra tout refaire (extraction et shaders) : il sera aussi long qu'un premier build." + (S.job.busy ? "\n\nLe jeu en cours de construction est laissé de côté." : ''))) return;
+  b.disabled = true; b.textContent = 'Suppression…';
+  try { const r = await api('/api/space/clean', { id: '*', what: 'all' }); for (const k in SPACE) delete SPACE[k]; $('#spaceAll').innerHTML = `<div class="small">${r.freed ? gb(r.freed) + ' libérés.' : 'Rien à supprimer.'}</div>`; }
+  catch (e) { alertBox(e.message); }
+  b.disabled = false; b.textContent = 'Supprimer tous les fichiers de build…';
+}
+async function cleanAll(b) { b.disabled = true; try { const r = await api('/api/space/clean', { id: '*', what: 'obsolete' }); for (const k in SPACE) delete SPACE[k]; $('#spaceAll').innerHTML = `<div class="small">${r.freed ? gb(r.freed) + ' libérés.' : 'Rien à supprimer.'}</div>`; } catch (e) { alertBox(e.message); } }
 async function choose(k, kind) { const r = await api('/api/choose', { kind }); if (r.path) $('#cf_' + k).value = r.path; }
-$('#btnSaveSettings').onclick = async () => { const b = { gameDefaults: {} }; FIELDS.forEach(([k]) => b[k] = $('#cf_' + k).value);
+$('#btnSaveSettings').onclick = async () => { const b = { gameDefaults: {}, cleanObsolete: $('#cf_cleanObsolete').checked ? '1' : '0', cleanAfterBuild: $('#cf_cleanAfterBuild').checked ? '1' : '0' }; FIELDS.forEach(([k]) => b[k] = $('#cf_' + k).value);
   GLOBAL_DEFAULTS.forEach(([k]) => { const v = $('#gd_' + k.replace('.', '_')).value; if (v) b.gameDefaults[k] = v; }); await api('/api/config', b); dlgSettings.close(); refresh(); };
 
 $('#btnCheck').onclick = async () => {

@@ -30,8 +30,10 @@ DEFAULTS = {
     'language': 'fr',
     'lowPriority': '1',   # builds avec nice : ils cèdent le processeur aux autres apps
     'gameDefaults': {},   # {DM_…: valeur, 'window.show': '0'/'1'} pré-remplis à chaque nouveau build Mac
+    'cleanObsolete': '1',   # vider les dossiers « obsolete » de nxnative après chaque build réussi
+    'cleanAfterBuild': '0',   # supprimer tous les fichiers de build d'un jeu après son build réussi (le suivant repart de zéro)
 }
-GAME_EXT = {'.nsp', '.xci', '.nsz', '.xcz'}
+GAME_EXT = {'.nsp', '.xci', '.nsz', '.xcz', '.nup'}   # .nup : conteneur NUP (jeu, mises à jour et DLC en un fichier, sans prod.keys)
 TOKEN = secrets.token_urlsafe(24)
 LOCK = threading.Lock()
 
@@ -363,11 +365,34 @@ def version_from_name(name):
     return None
 
 
+# Un .nup se lit avec le module de nxnative (scripts/pack_nup.py), dans le Python des réglages : identifiant du programme
+# construit (celui de la Switch 2 pour une Switch 2 Edition), versions de mise à jour et DLC qu'il contient.
+NUP_PROBE = ('import sys, json\nsys.path.insert(0, sys.argv[1])\nimport pack_nup as p\nn = p.Nup(sys.argv[2])\n'
+             'try:\n    app, base, vers, dlc = p.scan(n)\n'
+             '    print(json.dumps({"tid": "%016X" % app, "versions": sorted(vers), "dlc": len(dlc)}))\nfinally:\n    n.close()\n')
+
+
+def nup_info(cfg, path):
+    r = subprocess.run([cfg['python'], '-I', '-c', NUP_PROBE, str(Path(cfg['nxnative']) / 'scripts'), str(path)],
+                       capture_output=True, text=True, timeout=120, env=tool_env())
+    if r.returncode:
+        raise ValueError((r.stderr.strip().splitlines() or ['NUP illisible'])[-1])
+    return json.loads(r.stdout)
+
+
 def identify(cfg, path, cache, hk):
     st = path.stat()
     key = f'{path}|{st.st_size}|{int(st.st_mtime)}'
     if key in cache:
         return cache[key]
+    if path.suffix.lower() == '.nup':
+        try:
+            info = nup_info(cfg, path)
+            cache[key] = r = {'tid': info['tid'], 'ver': 0, 'nup': {'versions': info['versions'], 'dlc': info['dlc']}}
+            return r
+        except Exception:
+            m = re.search(r'\[([0-9A-Fa-f]{16})\]', path.name)   # nxnative absent ou trop ancien : le nom, sans le garder
+            return {'tid': m.group(1).upper() if m else None, 'ver': 0, 'nup': {'versions': [], 'dlc': 0}}
     tid = None
     m = re.search(r'\[([0-9A-Fa-f]{16})\]', path.name)
     try:
@@ -417,7 +442,9 @@ def scan(cfg):
             continue
         tid = int(r['tid'], 16)
         low = tid & 0xFFF
-        if low == 0:
+        if ext == '.nup':   # toujours un jeu complet ; un programme Switch 2 a un index non nul dans les bits bas
+            kind, base = 'base', tid
+        elif low == 0:
             kind, base = 'base', tid
         elif low == 0x800:
             kind, base = 'update', tid & ~0xFFF
@@ -425,6 +452,8 @@ def scan(cfg):
             kind, base = 'dlc', (tid & ~0xFFF) - 0x1000
         e = {'path': str(f), 'name': f.name, 'rel': rel, 'kind': kind, 'tid': r['tid'],
              'ver': 0 if kind == 'base' else r['ver'], 'size': size, 'ext': ext}
+        if ext == '.nup':
+            e['nup'] = r.get('nup') or {'versions': [], 'dlc': 0}
         g = games.setdefault(f'{base:016X}', {'base': None, 'bases': [], 'updates': [], 'dlc': []})
         if kind == 'base':
             g['bases'].append(e)
@@ -441,7 +470,7 @@ def scan(cfg):
     head_full = git(cfg, 'rev-parse', 'HEAD')[1] if head else ''
     out = []
     for gid, g in games.items():
-        g['bases'].sort(key=lambda e: (e['ext'] in ('.nsz', '.xcz'), e['rel']))   # un NSP/XCI plutôt que sa version compressée
+        g['bases'].sort(key=lambda e: (e['ext'] == '.nup', e['ext'] in ('.nsz', '.xcz'), e['rel']))   # un NSP/XCI plutôt que sa version compressée ou un NUP
         g['base'] = g['bases'][0] if g['bases'] else None
         g['updates'].sort(key=lambda e: e['ver'] or 0)
         prof = (profiles / gid).is_dir()
@@ -745,6 +774,10 @@ def stage_folder(cfg, game, update_ver, with_dlc):
         if p.is_symlink():
             p.unlink()
     picks = [game['base']]
+    if game['base']['ext'] == '.nup':   # tout est dans le NUP ; nxnative refuse un NUP avec d'autres paquets à côté
+        f = game['base']
+        (d / f"base00 [{f['tid']}].nup").symlink_to(f['path'])
+        return d, picks
     ups = game['updates']
     if update_ver == 'all':
         picks += ups                       # le script prend la plus récente
@@ -769,7 +802,7 @@ def safe_name(n):
 # même en cas d'échec. La file est gardée sur disque ; quitter pendant un build la remet en tête et met la file en pause.
 QUEUE_FILE = SUPPORT / 'queue.json'
 QLOCK = threading.RLock()
-OPT_KEYS = ('platform', 'language', 'update', 'dlc', 'noMotion', 'romfsSeparate', 'allowDamaged', 'seenShaders', 'shaderFiles')
+OPT_KEYS = ('platform', 'language', 'update', 'dlc', 'noMotion', 'romfsSeparate', 'allowDamaged', 'seenShaders', 'shaderFiles', 'showFps')
 
 
 def queue():
@@ -864,7 +897,8 @@ def start_build(cfg, req):
         raise ValueError('Jeu introuvable.')
     if not game['hasBase']:
         raise ValueError('Il manque le jeu de base (seulement une mise à jour ou des DLC).')
-    if not Path(cfg['keys']).is_file():
+    nup = game['base']['ext'] == '.nup'
+    if not nup and not Path(cfg['keys']).is_file():
         raise ValueError(f"prod.keys introuvable : {cfg['keys']}")
     if not Path(cfg['python']).exists():
         raise ValueError(f"Python introuvable : {cfg['python']}")
@@ -874,7 +908,8 @@ def start_build(cfg, req):
     Path(cfg['outDir']).mkdir(parents=True, exist_ok=True)
     out = Path(cfg['outDir']) / (safe_name(game['name']) + ('.app' if platform == 'mac-app' else '.ipa'))
     nice = ['nice', '-n', '10'] if cfg.get('lowPriority', '1') != '0' else []
-    cmd = nice + [cfg['python'], '-u', 'scripts/build_ipa_from_nsp.py', str(folder), '-k', cfg['keys'],
+    keys = ['-k', cfg['keys']] if Path(cfg['keys']).is_file() else []   # un NUP n'en a pas besoin
+    cmd = nice + [cfg['python'], '-u', 'scripts/build_ipa_from_nsp.py', str(folder), *keys,
            '--progress', 'json', '--platform', platform, '-l', lang, '-o', str(out), '--title-id', game['id']]
     if platform == 'ios' and req.get('romfsSeparate'):
         cmd += ['--romfs', 'separate']
@@ -886,6 +921,8 @@ def start_build(cfg, req):
         cmd += ['--seen-shaders']
     if platform == 'ios' and req.get('shaderFiles'):       # bibliothèque de shaders en fichiers séparés (AltServer : 2 Go max par fichier)
         cmd += ['--shader-files']
+    if platform == 'ios' and req.get('showFps') is False:   # nxnative l'affiche par défaut sur iPhone
+        cmd += ['--no-show-fps']
     log = folder / 'atelier.log'
     with JOB.cond:
         JOB.events, JOB.result, JOB.cancelled = [], None, False
@@ -903,10 +940,12 @@ def start_build(cfg, req):
     JOB.push({'ev': 'say', 'msg': f"nxnative {head} · {platform} · langue {lang}" + (' · priorité basse' if nice else '')})
     JOB.proc = subprocess.Popen(cmd, cwd=cfg['nxnative'], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, bufsize=1, env=tool_env(), start_new_session=True)
-    threading.Thread(target=pump, args=(JOB.proc, log, cfg, game, platform, lang, str(out), head), daemon=True).start()
+    # iPhone, fichiers du jeu à part : l'image RomFS à copier sur le téléphone (push_romfs.sh) reste dans le dossier de build
+    keep = platform == 'ios' and bool(req.get('romfsSeparate'))
+    threading.Thread(target=pump, args=(JOB.proc, log, cfg, game, platform, lang, str(out), head, keep), daemon=True).start()
 
 
-def pump(proc, log, cfg, game, platform, lang, out, head):
+def pump(proc, log, cfg, game, platform, lang, out, head, keep_build=False):
     lf = open(log, 'a', encoding='utf-8')
     lf.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(proc.args)}\n")
 
@@ -953,11 +992,87 @@ def pump(proc, log, cfg, game, platform, lang, out, head):
                     JOB.push({'ev': 'say', 'msg': msg})
             except Exception as e:
                 JOB.push({'ev': 'say', 'msg': f'Après le build : {e}', 'err': True})
+        what = 'build' if cfg.get('cleanAfterBuild') == '1' and not keep_build else 'obsolete' if cfg.get('cleanObsolete', '1') != '0' else None
+        if cfg.get('cleanAfterBuild') == '1' and keep_build:
+            JOB.push({'ev': 'say', 'msg': "Fichiers de build gardés : l'image du jeu à copier sur l'iPhone (fichiers à part) y est."})
+        if what:
+            try:
+                freed = clean_build(cfg, game['id'], what)
+                if freed:
+                    label = 'Fichiers de build supprimés' if what == 'build' else "Fichiers que nxnative n'utilise plus supprimés"
+                    size = f"{freed / 1e9:.1f} Go".replace('.', ',') if freed >= 1e9 else f"{max(1, round(freed / 1e6))} Mo"
+                    JOB.push({'ev': 'say', 'msg': f"{label} : {size} libérés"})
+            except Exception as e:
+                JOB.push({'ev': 'say', 'msg': f'Nettoyage du dossier obsolete : {e}', 'err': True})
     lf.write(f"===== fin, code {code}\n"); lf.close()
     with JOB.cond:
         JOB.result = {'ok': ok, 'code': code, 'out': out, 'cancelled': JOB.cancelled}
     JOB.push({'ev': 'done', 'ok': ok, 'code': code, 'cancelled': JOB.cancelled})
     finish_item(ok, code, JOB.cancelled, missing)
+
+
+# ---------- place disque des fichiers de build ----------
+# <dossier de travail>/<title ID>/ : liens vers les fichiers du jeu, et <title ID>_build (extraction, shaders, archives
+# de pipelines) que nxnative réutilise d'un build à l'autre. Il range ce qu'il n'utilise plus dans <…>_build/obsolete
+# (et le jeu Mac lui-même, pour les archives de pipelines remplacées) ; il ne le vide qu'au build réussi suivant.
+def build_dir(cfg, gid):
+    if not re.fullmatch(r'[0-9A-F]{16}', gid or ''):
+        raise ValueError('identifiant invalide')
+    return Path(cfg['workDir']) / gid
+
+
+def obsolete_dirs(d):
+    return [p for p in (d / 'obsolete', *d.glob('*_build/obsolete')) if p.is_dir() and not p.is_symlink()]
+
+
+def du(p):
+    """Taille sur le disque en octets (du ne suit pas les liens : les fichiers du jeu ne comptent pas)."""
+    r = subprocess.run(['du', '-sk', str(p)], capture_output=True, text=True)
+    try:
+        return int(r.stdout.split()[0]) * 1024
+    except (IndexError, ValueError):
+        return 0
+
+
+def build_space(cfg, gid):
+    d = build_dir(cfg, gid)
+    if not d.is_dir():
+        return {'total': 0, 'obsolete': 0}
+    return {'total': du(d), 'obsolete': sum(du(o) for o in obsolete_dirs(d))}
+
+
+def space_all(cfg):
+    root = Path(cfg['workDir'])
+    names = {g['id']: g['name'] for g in scan(cfg)[0]}
+    out = []
+    if root.is_dir():
+        for d in sorted(root.iterdir()):
+            if d.is_dir() and re.fullmatch(r'[0-9A-F]{16}', d.name):
+                out.append({'id': d.name, 'name': names.get(d.name, ''), **build_space(cfg, d.name)})
+    out.sort(key=lambda e: -e['total'])
+    return out
+
+
+def clean_build(cfg, gid, what):
+    """what : 'obsolete' (ce que nxnative n'utilise plus), 'all' (tout le dossier : le prochain build réextrait le jeu)
+    ou 'build' (comme 'all' en gardant le journal de build atelier.log, pour la suppression automatique après un build).
+    Renvoie les octets libérés. Les liens vers les fichiers du jeu sont retirés, jamais suivis."""
+    d = build_dir(cfg, gid)
+    if JOB.busy() and (JOB.info or {}).get('id') == gid:
+        raise ValueError('Ce jeu est en cours de construction.')
+    if not d.is_dir():
+        return 0
+    targets = (obsolete_dirs(d) if what == 'obsolete' else [d] if what == 'all'
+               else [p for p in d.iterdir() if p.name != 'atelier.log'] if what == 'build' else [])
+    freed = 0
+    for t in targets:
+        if t.is_symlink() or t.is_file():   # liens vers les fichiers du jeu : retirés, jamais suivis
+            freed += 0 if t.is_symlink() else t.stat().st_blocks * 512
+            t.unlink(); continue
+        n = du(t)
+        shutil.rmtree(t, ignore_errors=True)
+        freed += n - (du(t) if t.exists() else 0)
+    return freed
 
 
 UNZIPPING = set()
@@ -1064,6 +1179,9 @@ class Handler(BaseHTTPRequestHandler):
                 'job': {'busy': JOB.busy(), 'info': JOB.info, 'result': JOB.result, 'item': JOB.item},
                 'queue': queue(),
             })
+        if u.path == '/api/space':
+            gid = qs.get('id', [''])[0]
+            return self.send(200, build_space(cfg, gid) if gid else {'games': space_all(cfg)})
         if u.path == '/api/busy':
             return self.send(200, {'busy': JOB.busy(), 'queued': len(queue()['items'])})
         if u.path == '/api/events':
@@ -1124,6 +1242,14 @@ class Handler(BaseHTTPRequestHandler):
                 with QLOCK:
                     q = queue(); q['history'] = []; save_queue(q)
                 return self.send(200, {'ok': True})
+            if u.path == '/api/space/clean':
+                if req.get('id') == '*':   # tous les jeux, sauf celui en cours de build
+                    busy = (JOB.info or {}).get('id') if JOB.busy() else None
+                    ids = [i['id'] for i in space_all(cfg) if i['id'] != busy]
+                else:
+                    ids = [req.get('id')]
+                freed = sum(clean_build(cfg, gid, req.get('what')) for gid in ids)
+                return self.send(200, {'ok': True, 'freed': freed})
             if u.path == '/api/unzip':
                 unzip(cfg, req.get('path', '')); return self.send(200, {'ok': True})
             if u.path == '/api/cancel':
