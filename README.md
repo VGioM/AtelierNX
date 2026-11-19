@@ -7,6 +7,7 @@ Interface graphique simple pour [nxnative](https://github.com/seedds/nxnative) (
 ![Atelier NX](docs/capture.png)
 
 - Liste les jeux Switch de tout le dossier, sous-dossiers compris, avec leurs mises à jour et DLC où qu'ils soient rangés. L'identifiant est lu dans le fichier (ticket du NSP, en-têtes NCA d'un XCI ou d'un NSP sans ticket, déchiffrés avec `prod.keys`), sinon dans le nom (`[title ID]`). Jeux groupés « avec profil » / « sans profil », archives `.zip` décompressables.
+- Jaquettes lues dans le jeu lui-même, sans site tiers : l'icône du NCA Control du fichier de base (NSP ou XCI, déchiffré avec `prod.keys`), dans la langue des Réglages (sinon en anglais), extraite en arrière-plan pour chaque jeu qui n'a pas encore d'icône. Après un build Mac, l'icône de l'app la remplace. Rien pour les NSZ/XCZ et les NUP.
 - Construit une app Mac ou une IPA avec `scripts/build_ipa_from_nsp.py`, en choisissant la langue, la mise à jour et les DLC, avec la progression en direct (`--progress json`).
 - File de construction : « Construire » ajoute le jeu à la file avec ses options (langue, mise à jour, DLC, options avancées) ; les builds s'enchaînent, un échec n'arrête pas la file. Ordre modifiable, pause, historique. La file est gardée sur disque (`queue.json`) : quitter pendant un build le remet en tête, file en pause.
 - « Construire plusieurs jeux » : une ligne par jeu (Mac, iPhone ou les deux, mise à jour, DLC), filtres (avec profil, jamais construits, à reconstruire) et recherche ; un clic ajoute tout à la file.

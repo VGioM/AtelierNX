@@ -263,15 +263,23 @@ def profile_name(cfg, gid):
         return None
 
 
-def header_key(cfg):
+def prod_keys(cfg):
+    """Toutes les clés de prod.keys ({nom: octets}) ; {} si le fichier manque."""
+    keys = {}
     try:
         for line in Path(cfg['keys']).read_text().splitlines():
             k, _, v = line.replace(' ', '').partition('=')
-            if k == 'header_key':
-                return bytes.fromhex(v)
-    except (OSError, ValueError):
+            try:
+                keys[k.lower()] = bytes.fromhex(v)
+            except ValueError:
+                pass
+    except OSError:
         pass
-    return None
+    return keys
+
+
+def header_key(cfg):
+    return prod_keys(cfg).get('header_key')
 
 
 def xts_decrypt(key, data, sector, ssize=0x200):
@@ -353,6 +361,158 @@ def read_title_id(path, hk):
         if h[0x100:0x104] == b'HEAD' and hk:
             return pick_id(xci_title_ids(f, hk))
     return None
+
+
+# ---------- icône lue dans le fichier du jeu (NCA Control, RomFS, icon_<Langue>.dat) ----------
+# Format d'après nsz (Fs/Nca.py, BaseFs.py, Ivfc.py, Ticket.py, nut/Keys.py) et nx_extract de nxnative (fonction Icon).
+ICON_LANG = {'fr': 'French', 'fr-CA': 'CanadianFrench', 'en-US': 'AmericanEnglish', 'en-GB': 'BritishEnglish',
+             'es': 'Spanish', 'es-419': 'LatinAmericanSpanish', 'de': 'German', 'it': 'Italian', 'nl': 'Dutch',
+             'pt': 'Portuguese', 'pt-BR': 'BrazilianPortuguese', 'ru': 'Russian', 'ja': 'Japanese', 'ko': 'Korean',
+             'zh-Hans': 'SimplifiedChinese', 'zh-Hant': 'TraditionalChinese'}
+TICKET_SIG = {0x10000: 0x200, 0x10003: 0x200, 0x10001: 0x100, 0x10004: 0x100, 0x10002: 0x3C, 0x10005: 0x3C}
+
+
+def _ecb(key):
+    from Crypto.Cipher import AES
+    return AES.new(key, AES.MODE_ECB)
+
+
+def titlekek(keys, mk):
+    k = keys.get(f'titlekek_{mk:02x}')
+    if k is None and f'master_key_{mk:02x}' in keys and 'titlekek_source' in keys:
+        k = _ecb(keys[f'master_key_{mk:02x}']).decrypt(keys['titlekek_source'])
+    return k
+
+
+def key_area_key(keys, kind, mk):
+    k = keys.get(f'key_area_key_{kind}_{mk:02x}')
+    src = keys.get(f'key_area_key_{kind}_source')
+    if k is None and src and all(n in keys for n in (f'master_key_{mk:02x}', 'aes_kek_generation_source', 'aes_key_generation_source')):
+        kek = _ecb(keys[f'master_key_{mk:02x}']).decrypt(keys['aes_kek_generation_source'])
+        k = _ecb(_ecb(kek).decrypt(src)).decrypt(keys['aes_key_generation_source'])
+    return k
+
+
+def control_nca(f, entries, hk, tid):
+    """(offset, en-tête déchiffré 0x600) du NCA Control du titre, ou None."""
+    for name, (o, size) in entries.items():
+        if not name.lower().endswith('.nca') or size < 0xC00:
+            continue
+        f.seek(o)
+        raw = f.read(0x600)
+        h = xts_decrypt(hk, raw[:0x400], 0)
+        if h[0x200:0x204] == b'NCA3' and h[0x205] == 2 and struct.unpack_from('<Q', h, 0x210)[0] == tid:
+            return o, h + xts_decrypt(hk, raw[0x400:], 2)
+    return None
+
+
+def ticket_titlekey(f, entries, rights_id):
+    e = next((v for n, v in entries.items() if n.lower() == rights_id.hex() + '.tik'), None)
+    if not e:
+        return None
+    f.seek(e[0]); t = f.read(min(e[1], 0x400))
+    sig = TICKET_SIG.get(struct.unpack_from('<I', t, 0)[0])
+    if not sig:
+        return None
+    pos = 4 + sig + (0x40 - (sig + 4) % 0x40) + 0x40
+    return t[pos:pos + 16] if len(t) >= pos + 16 else None
+
+
+def romfs_icon(path, keys, tid, lang):
+    """Octets JPEG de l'icône (langue des Réglages, sinon anglais, sinon la première), ou None."""
+    from Crypto.Cipher import AES
+    hk = keys['header_key']
+    with open(path, 'rb') as f:
+        head = f.read(0x104)
+        if head[:4] == b'PFS0':
+            entries = pfs0_entries(f)
+        elif head[0x100:0x104] == b'HEAD':
+            f.seek(0x130); root = struct.unpack('<Q', f.read(8))[0]
+            entries = hfs0(f, hfs0(f, root)['secure'][0])
+        else:
+            return None
+        found = control_nca(f, entries, hk, tid)
+        if not found:
+            return None
+        base, h = found
+        mk = max(max(h[0x206], h[0x220]) - 1, 0)
+        rights = h[0x230:0x240]
+        if any(rights):
+            enc, kek = ticket_titlekey(f, entries, rights), titlekek(keys, mk)
+        else:
+            enc = h[0x320:0x330]
+            kek = key_area_key(keys, ('application', 'ocean', 'system')[h[0x207]] if h[0x207] < 3 else '', mk)
+        if not enc or not kek:
+            return None
+        key = _ecb(kek).decrypt(enc)
+        start = struct.unpack_from('<I', h, 0x240)[0] * 0x200
+        sh = h[0x400:0x600]
+        if sh[2] != 0 or sh[4] != 3 or sh[0x8:0xC] != b'IVFC':   # version u16, fs_type (0 = RomFS), hash, chiffrement (3 = CTR)
+            return None
+        ctr_hi = sh[0x140:0x148][::-1]
+
+        def read(off, size):   # off relatif à la section ; AES-CTR aligné sur 16 octets
+            a = start + off
+            al = a & ~0xF
+            f.seek(base + al)
+            data = f.read(size + (a - al) + 15 & ~0xF)
+            c = AES.new(key, AES.MODE_CTR, nonce=b'', initial_value=ctr_hi + (al >> 4).to_bytes(8, 'big'))
+            return c.decrypt(data)[a - al:a - al + size]
+
+        n = struct.unpack_from('<I', sh, 0x8 + 0xC)[0]
+        romfs = struct.unpack_from('<Q', sh, 0x8 + 0x10 + (n - 2) * 0x18)[0]
+        rh = struct.unpack('<10Q', read(romfs, 0x50))
+        meta = read(romfs + rh[7], rh[8])
+        files, i = {}, 0
+        while i + 0x20 <= len(meta):
+            off, size = struct.unpack_from('<QQ', meta, i + 8)
+            ln = struct.unpack_from('<I', meta, i + 0x1C)[0]
+            files[meta[i + 0x20:i + 0x20 + ln].decode(errors='replace')] = (off, size)
+            i += 0x20 + (ln + 3 & ~3)
+        icons = [n for n in files if n.startswith('icon_') and n.endswith('.dat')]
+        want = [f'icon_{l}.dat' for l in (ICON_LANG.get(lang), 'AmericanEnglish', 'BritishEnglish') if l]
+        name = next((w for w in want if w in files), icons[0] if icons else None)
+        if not name or not 0 < files[name][1] <= 2_000_000:
+            return None
+        data = read(romfs + rh[9] + files[name][0], files[name][1])
+        return data if data[:2] == b'\xff\xd8' else None
+
+
+_icon_lock = threading.Lock()
+_icon_tried = set()
+
+
+def fetch_icons(cfg, games):
+    """Icônes manquantes : lues dans le NCA Control du fichier de base (NSP ou XCI), en arrière-plan, une fois par jeu."""
+    try:
+        import Crypto.Cipher.AES   # noqa: F401
+    except Exception:
+        return
+    keys = prod_keys(cfg)
+    if 'header_key' not in keys:
+        return
+    todo = [(gid, path) for gid, path in games if gid not in _icon_tried
+            and Path(path).suffix.lower() in ('.nsp', '.xci')]   # NSZ/XCZ (Control en .ncz), NUP : pas d'icône
+    if not todo:
+        return
+    _icon_tried.update(gid for gid, _ in todo)
+    lang = cfg.get('language') or 'fr'
+
+    def run():
+        with _icon_lock:
+            for gid, path in todo:
+                if icon_url(gid):
+                    continue
+                try:
+                    data = romfs_icon(path, keys, int(gid, 16), lang)
+                    if data:
+                        ICONS.mkdir(parents=True, exist_ok=True)
+                        tmp = ICONS / f'.{gid}.jpg.tmp'
+                        tmp.write_bytes(data)
+                        tmp.replace(ICONS / f'{gid}.jpg')
+                except Exception:
+                    pass
+    threading.Thread(target=run, daemon=True).start()
 
 
 def version_from_name(name):
@@ -505,6 +665,7 @@ def scan(cfg):
                         cur['out'] = b['out']
             save_json(STATE, st2)
     out.sort(key=lambda g: (not g['profile'], g['name'].lower()))
+    fetch_icons(cfg, [(g['id'], g['base']['path']) for g in out if not g['icon'] and g['base']])
     return out, orphans, archives
 
 
