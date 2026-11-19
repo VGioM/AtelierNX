@@ -8,11 +8,6 @@
 # Étapes : version dans build.sh, build + installation, tests s'il y en a,
 # commit « Version X.Y.Z », tag vX.Y.Z, push, puis release GitHub avec
 # <App>-X.Y.Z-macOS-arm64.zip.
-#
-# Plusieurs plateformes : une même release porte un fichier par plateforme,
-# nommé <App>-X.Y.Z-<plateforme>-<arch>.<ext> (macOS-arm64.zip,
-# linux-x86_64.tar.gz, windows-x64.zip…). Chaque app ne prend que le sien ;
-# ajoutez les autres avec `gh release upload vX.Y.Z <fichier>`.
 set -euo pipefail
 cd "$(dirname "$0")"
 

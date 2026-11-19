@@ -2,11 +2,11 @@
 
 # Atelier NX
 
-Interface graphique simple pour [nxnative](https://github.com/seedds/nxnative) (le projet d'origine), sans passer par NX2Apple : on choisit un jeu Switch, la langue, la mise à jour et les DLC, et on clique sur Construire.
+Interface graphique simple pour [nxnative](https://github.com/seedds/nxnative) (le projet d'origine) : on choisit un jeu Switch, la langue, la mise à jour et les DLC, et on clique sur Construire.
 
 ![Atelier NX](docs/capture.png)
 
-- Liste les jeux Switch de tout le dossier, sous-dossiers compris, avec leurs mises à jour et DLC où qu'ils soient rangés. L'identifiant est lu dans le fichier (ticket du NSP, en-têtes NCA d'un XCI ou d'un NSP sans ticket, déchiffrés avec `prod.keys`), sinon dans le nom (`[title ID]`). Jeux groupés « avec profil » / « sans profil », jaquettes eShop, archives `.zip` décompressables.
+- Liste les jeux Switch de tout le dossier, sous-dossiers compris, avec leurs mises à jour et DLC où qu'ils soient rangés. L'identifiant est lu dans le fichier (ticket du NSP, en-têtes NCA d'un XCI ou d'un NSP sans ticket, déchiffrés avec `prod.keys`), sinon dans le nom (`[title ID]`). Jeux groupés « avec profil » / « sans profil », archives `.zip` décompressables.
 - Construit une app Mac ou une IPA avec `scripts/build_ipa_from_nsp.py`, en choisissant la langue, la mise à jour et les DLC, avec la progression en direct (`--progress json`).
 - File de construction : « Construire » ajoute le jeu à la file avec ses options (langue, mise à jour, DLC, options avancées) ; les builds s'enchaînent, un échec n'arrête pas la file. Ordre modifiable, pause, historique. La file est gardée sur disque (`queue.json`) : quitter pendant un build le remet en tête, file en pause.
 - « Construire plusieurs jeux » : une ligne par jeu (Mac, iPhone ou les deux, mise à jour, DLC), filtres (avec profil, jamais construits, à reconstruire) et recherche ; un clic ajoute tout à la file.
@@ -14,7 +14,7 @@ Interface graphique simple pour [nxnative](https://github.com/seedds/nxnative) (
 - Place disque des builds : sur la fiche d'un jeu, la taille de ses fichiers de build et de ce que nxnative n'utilise plus (dossier `obsolete`), avec « Supprimer les fichiers inutilisés » ou « Tout supprimer » (le prochain build réextrait le jeu ; l'app et la sauvegarde ne sont pas touchées). Dans Réglages : le total par jeu, le dossier `obsolete` vidé automatiquement après chaque build réussi (désactivable), un bouton pour supprimer les fichiers de build de tous les jeux, et une case pour supprimer ceux d'un jeu dès son build réussi (sauf iPhone avec fichiers du jeu à part, dont l'image RomFS est copiée sur le téléphone depuis le dossier de build).
 - Conteneurs `.nup` (jeu, mises à jour et DLC en un seul fichier) : lus avec `scripts/pack_nup.py` de nxnative, construits sans `prod.keys`.
 - Builds en priorité basse (`nice -n 10`, réglable) : ils prennent le processeur libre sans faire ramer les autres apps.
-- Bouton « Jouer », journal du jeu, dossier de sauvegarde du jeu (pour en faire une copie), reprise des anciennes sauvegardes NX2Apple.
+- Bouton « Jouer », journal du jeu, dossier de sauvegarde du jeu (pour en faire une copie).
 - « Réglages du jeu » : les réglages de la fenêtre de lancement nxnative (liste lue dans `launcher.json`), pré-remplis via les choix enregistrés de l'app (`launcher.<VAR>`), sans les bloquer. Réglages par défaut appliqués automatiquement à chaque nouveau build Mac. `env.txt` reste accessible pour forcer un réglage.
 - Modules Python de nxnative installés tout seuls : la liste est lue dans le script de nxnative (ses vérifications et sa ligne `pip install`), donc un module ajouté par une future version (comme `zbic`) est pris en compte sans mise à jour d'Atelier NX. Vérifiée au lancement, après chaque mise à jour de nxnative et avant chaque build (rien n'est relancé tant que ni le Python ni nxnative ne changent) ; ce qui manque est installé dans le Python des Réglages avec `uv pip` (sinon `pip`, installé au besoin par `ensurepip`). Si un build échoue quand même sur un module manquant, il est installé et le jeu relancé une fois. Si l'installation échoue, la file se met en pause avec un seul message et un bouton « Réessayer », au lieu de faire échouer tous les jeux un par un.
 - Vérifie et installe les mises à jour de nxnative (`git pull`), et signale les jeux construits avec une ancienne version : nombre de changements depuis le build, et ceux qui citent le jeu (son profil, son nom ou son identifiant dans le message), avec un lien vers chacun sur GitHub. Une app déplacée est retrouvée dans le dossier des apps des Réglages.
@@ -66,14 +66,10 @@ Sans l'app : `python3 server.py --open` ouvre la page dans le navigateur.
 ./release.sh 1.4.0 notes.md   # avec des notes écrites à la main
 ```
 
-La release contient `AtelierNX-<version>-macOS-arm64.zip`. Les apps déjà installées la
+La release contient `AtelierNX-<version>-macOS-arm64.zip` (nxnative ne fonctionne que sur Mac Apple Silicon, il n'y a pas d'autre plateforme). Les apps déjà installées la
 trouvent via l'API GitHub et proposent de l'installer (`SelfUpdate.swift`, le même
 fichier dans Biblifilm, Biblijeu, Atelier NX et Recomps). Elles n'acceptent qu'une
 version signée avec le même certificat que la leur : il faut donc **garder ce
 certificat** (« VGioM Local Signing », dans le trousseau de session ; à exporter avec sa clé
 privée en lieu sûr). Une release signée avec un autre certificat devrait être
 réinstallée à la main par chacun.
-
-Les versions Linux et Windows à venir iront dans la même release, un fichier par
-plateforme : `<App>-<version>-linux-x86_64.tar.gz`, `<App>-<version>-windows-x64.zip`…
-La version Mac ne prend que le fichier marqué `macOS`.

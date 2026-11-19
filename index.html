@@ -305,12 +305,7 @@ function renderDetail() {
     if (g.builds.some(b => b.platform === 'mac-app')) {
       h += `<p class="muted small">Une fenêtre de réglages s'ouvre avant le jeu (langue, plein écran…) et retient tes choix. Tu peux la masquer (case « Show this window at launch », ou ici dans « Réglages du jeu ») ; maintiens ⌥ (Option) au lancement pour la revoir.</p>`;
       if (g.envTxt.length) h += `<div class="note warn small">Réglages forcés dans env.txt (grisés dans la fenêtre du jeu) : <code>${esc(g.envTxt.join('  '))}</code> <button class="link" onclick="editEnv('${g.id}')">modifier</button></div>`;
-      if (g.save.exists || g.save.old) {
-        h += `<div class="row small"><span class="muted">${g.save.exists ? 'Sauvegarde présente.' : 'Pas encore de sauvegarde.'}${g.save.old ? ' Une ancienne sauvegarde NX2Apple existe.' : ''}</span>`;
-        if (g.save.exists) h += `<button class="link" onclick="openIt('${g.id}','mac-app','save')">Dossier de sauvegarde</button>`;
-        if (g.save.old) h += `<button class="link" onclick="importSave('${g.id}', ${g.save.exists})">Reprendre l'ancienne sauvegarde</button><button class="link" onclick="openIt('${g.id}','mac-app','data')">Dossier de données</button>`;
-        h += `</div>`;
-      }
+      if (g.save.exists) h += `<div class="row small"><span class="muted">Sauvegarde présente.</span><button class="link" onclick="openIt('${g.id}','mac-app','save')">Dossier de sauvegarde</button></div>`;
     }
     h += `</div>`;
   }
@@ -457,10 +452,6 @@ async function pauseQueue(paused) { await api('/api/queue/pause', { paused }); r
 async function clearHistory() { await api('/api/queue/clear-history', {}); refresh(); }
 async function cancelBuild() { await api('/api/cancel', {}); }
 async function openIt(id, platform, what, reveal) { try { await api('/api/open', { id, platform, what, reveal }); } catch (e) { alertBox(e.message); } }
-async function importSave(id, exists) {
-  if (exists && !confirm('Une sauvegarde nxnative existe déjà. Elle sera mise de côté (dossier save.avant-…) et remplacée par l\'ancienne sauvegarde NX2Apple. Continuer ?')) return;
-  const r = await api('/api/import-save', { id }); alertBox(r.msg); refresh();
-}
 function alertBox(msg) { const d = $('#detail'); const n = document.createElement('div'); n.className = 'note warn'; n.textContent = msg; d.prepend(n); setTimeout(() => n.remove(), 8000); }
 
 // ---------- construire plusieurs jeux d'un coup ----------
@@ -570,7 +561,7 @@ let envFor = null;
 function editEnv(id) { envFor = id; $('#envText').value = S.games.find(g => g.id === id).envTxt.join('\n'); dlgEnv.showModal(); }
 $('#btnSaveEnv').onclick = async () => { await api('/api/env', { id: envFor, lines: $('#envText').value.split('\n') }); dlgEnv.close(); refresh(); };
 
-const FIELDS = [['romDir','Dossier des jeux Switch','folder'],['keys','prod.keys','file'],['outDir','Dossier des apps construites','folder'],['workDir','Dossier de travail (fichiers de build)','folder'],['oldSaveDir','Anciennes sauvegardes NX2Apple','folder'],['nxnative','Dossier nxnative (clone de seedds/nxnative)','folder'],['python','Python (3.12 ou plus, avec les modules)','file'],['language','Langue par défaut',''],['lowPriority','Priorité des builds','']];
+const FIELDS = [['romDir','Dossier des jeux Switch','folder'],['keys','prod.keys','file'],['outDir','Dossier des apps construites','folder'],['workDir','Dossier de travail (fichiers de build)','folder'],['nxnative','Dossier nxnative (clone de seedds/nxnative)','folder'],['python','Python (3.12 ou plus, avec les modules)','file'],['language','Langue par défaut',''],['lowPriority','Priorité des builds','']];
 $('#btnSettings').onclick = () => {
   $('#settingsForm').innerHTML = FIELDS.map(([k, l, kind]) => `<div style="margin:8px 0"><div class="small muted">${l}</div><div class="row" style="margin:3px 0;flex-wrap:nowrap">${k === 'language' ? `<select id="cf_${k}">${LANGS.map(([c, n]) => `<option value="${c}" ${S.config[k] === c ? 'selected' : ''}>${n}</option>`).join('')}</select>`
     : k === 'lowPriority' ? `<select id="cf_${k}"><option value="1" ${S.config[k] !== '0' ? 'selected' : ''}>Basse : cède la place aux autres apps (recommandé)</option><option value="0" ${S.config[k] === '0' ? 'selected' : ''}>Normale : un peu plus rapide, le Mac peut ramer</option></select>` : `<input type="text" id="cf_${k}" value="${esc(S.config[k])}">${kind ? `<button onclick="choose('${k}','${kind}')">…</button>` : ''}`}</div></div>`).join('');

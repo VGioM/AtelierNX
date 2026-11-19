@@ -5,8 +5,7 @@
 //
 // Au lancement (au plus une fois par jour, sauf si la recherche automatique
 // est désactivée dans les réglages), l'app lit les releases de son dépôt et
-// garde la plus récente qui contient un zip Mac (Mac et Linux partagent les
-// releases mais n'ont pas les mêmes numéros). Si elle est plus récente que
+// garde la plus récente qui contient un zip. Si elle est plus récente que
 // l'app en place, elle propose de l'installer : le zip
 // est téléchargé, décompressé, vérifié, puis remplace l'app, qui se relance.
 // Un fichier téléchargé par l'app elle-même ne porte pas la quarantaine, donc
@@ -286,10 +285,8 @@ enum SelfUpdate {
         }
     }
 
-    /// La release Mac la plus récente du dépôt (ni brouillon ni préversion).
-    /// Mac et Linux partagent les releases sans partager les numéros : la
-    /// dernière release peut n'avoir qu'une AppImage, on lit donc la liste
-    /// et on garde la plus haute qui a un zip Mac. `feed` remplace l'adresse
+    /// La release la plus récente du dépôt (ni brouillon ni préversion) qui a
+    /// un zip de l'app. `feed` remplace l'adresse
     /// de l'API (un tableau JSON), pour les tests.
     static func latest(repo: String, feed: URL? = nil) async throws -> Release {
         let url = feed ?? URL(string: "https://api.github.com/repos/\(repo)/releases?per_page=30")!
@@ -328,20 +325,11 @@ enum SelfUpdate {
         return best
     }
 
-    /// Le zip Mac de la release.
-    ///
-    /// Une même release porte les fichiers de toutes les plateformes, nommés
-    /// `<App>-<version>-<plateforme>-<architecture>.<ext>` :
-    /// `-macOS-arm64.zip`, `-linux-x86_64.tar.gz`, `-windows-x64.zip`…
-    /// Seul un zip marqué macOS est pris ; un zip sans aucune plateforme dans
-    /// son nom (anciennes releases) aussi, mais jamais celui d'une autre
-    /// plateforme. Une release qui n'a pas encore sa version Mac n'est donc
-    /// pas proposée.
+    /// Le zip de l'app dans la release (`<App>-<version>-macOS-arm64.zip`,
+    /// ou un zip sans « macOS » dans le nom pour les anciennes releases).
     static func macZip(among names: [String]) -> String? {
         let zips = names.filter { $0.lowercased().hasSuffix(".zip") }
-        if let mac = zips.first(where: { $0.lowercased().contains("macos") }) { return mac }
-        let elsewhere = ["windows", "win32", "win64", "linux", "appimage"]
-        return zips.first { name in !elsewhere.contains { name.lowercased().contains($0) } }
+        return zips.first(where: { $0.lowercased().contains("macos") }) ?? zips.first
     }
 
     /// Les notes telles qu'on les lit, sans le Markdown ni la partie « Installation ».

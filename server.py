@@ -14,10 +14,9 @@ SUPPORT = Path(os.environ.get('ATELIERNX_SUPPORT') or Path.home() / 'Library/App
 CONFIG = SUPPORT / 'config.json'
 STATE = SUPPORT / 'state.json'
 ICONS = SUPPORT / 'icons'
-ARTWORK = Path.home() / 'Library/Application Support/NS Port Builder/artwork'
 NX_SUPPORT = Path.home() / 'Library/Application Support/nxnative'
 
-# Chemins vides = à choisir dans Réglages ; les dossiers d'apps, de build et d'anciennes sauvegardes
+# Chemins vides = à choisir dans Réglages ; les dossiers d'apps et de build
 # sont alors pris dans le dossier des jeux (voir config()).
 DEFAULTS = {
     'nxnative': str(Path.home() / 'nxnative'),
@@ -26,7 +25,6 @@ DEFAULTS = {
     'keys': str(Path.home() / '.switch/prod.keys'),
     'outDir': '',
     'workDir': '',   # vide = <jeux>/nxnative-build.noindex (« .noindex » : Spotlight n'indexe pas les milliers de fichiers de build)
-    'oldSaveDir': '',
     'language': 'fr',
     'lowPriority': '1',   # builds avec nice : ils cèdent le processeur aux autres apps
     'gameDefaults': {},   # {DM_…: valeur, 'window.show': '0'/'1'} pré-remplis à chaque nouveau build Mac
@@ -61,7 +59,7 @@ def find_python(nxnative):
 def config():
     cfg = {**DEFAULTS, **load_json(CONFIG, {})}
     rom = cfg['romDir']
-    for k, sub in (('outDir', 'Apps'), ('workDir', 'nxnative-build.noindex'), ('oldSaveDir', 'save')):
+    for k, sub in (('outDir', 'Apps'), ('workDir', 'nxnative-build.noindex')):
         if not cfg[k] and rom:
             cfg[k] = str(Path(rom) / sub)
     if not cfg['python']:
@@ -487,7 +485,6 @@ def scan(cfg):
                 builds.append({**b, 'platform': plat, 'stale': stale,
                                'changes': game_changes(cfg, gid, name, b['commit'], head_full) if stale else None})
         save_dst = NX_SUPPORT / gid / 'save'
-        old_save = Path(cfg['oldSaveDir']) / gid
         out.append({
             'id': gid, 'name': name, 'hasBase': g['base'] is not None,
             'base': g['base'], 'otherBases': g['bases'][1:], 'updates': g['updates'], 'dlc': g['dlc'],
@@ -495,8 +492,7 @@ def scan(cfg):
             'profile': prof,
             'builds': builds,
             'icon': icon_url(gid),
-            'save': {'exists': save_dst.is_dir() and any(save_dst.iterdir()),
-                     'old': old_save.is_dir() and any(p for p in old_save.iterdir() if not p.name.startswith('.'))},
+            'save': {'exists': save_dst.is_dir() and any(save_dst.iterdir())},
             'envTxt': read_env_txt(gid),
         })
     if state_moved:
@@ -509,7 +505,6 @@ def scan(cfg):
                         cur['out'] = b['out']
             save_json(STATE, st2)
     out.sort(key=lambda g: (not g['profile'], g['name'].lower()))
-    fetch_banners([g['id'] for g in out if not g['icon']])
     return out, orphans, archives
 
 
@@ -580,7 +575,6 @@ def catalog_for(cfg, owned):
             continue
         out.append({**g, 'icon': icon_url(g['id'])})
     out.sort(key=lambda g: g['name'].lower())
-    fetch_banners([g['id'] for g in out if not g['icon']])
     return {'fetched': cat['fetched'], 'ref': cat['ref'], 'games': out}
 
 
@@ -593,35 +587,6 @@ def catalog_loop():
         except Exception:
             pass
         time.sleep(1800)
-
-
-_banner_lock = threading.Lock()
-_banner_tried = set()
-
-
-def fetch_banners(ids):
-    """Jaquettes manquantes : image eShop listée dans l'index de NX2Apple (téléchargée une fois, en arrière-plan)."""
-    todo = [i for i in ids if i not in _banner_tried]
-    if not todo:
-        return
-    _banner_tried.update(todo)
-    idx = load_json(ARTWORK / 'index.json', {}).get('banners', {})
-
-    def run():
-        import urllib.request
-        with _banner_lock:
-            for gid in todo:
-                url = idx.get(gid)
-                if not url or urlparse(url).hostname != 'img-eshop.cdn.nintendo.net':
-                    continue
-                try:
-                    with urllib.request.urlopen(url, timeout=20) as r:
-                        data = r.read(5_000_000)
-                    ICONS.mkdir(parents=True, exist_ok=True)
-                    (ICONS / f'{gid}.jpg').write_bytes(data)
-                except Exception:
-                    pass
-    threading.Thread(target=run, daemon=True).start()
 
 
 def read_env_txt(gid):
@@ -637,8 +602,6 @@ def icon_url(gid):
         return f'/icon/{gid}.png'
     if (ICONS / f'{gid}.jpg').exists():
         return f'/icon/{gid}.jpg'
-    if (ARTWORK / f'{gid}.jpg').exists():
-        return f'/art/{gid}.jpg'
     return None
 
 
@@ -987,9 +950,6 @@ def pump(proc, log, cfg, game, platform, lang, out, head, keep_build=False):
                 n = apply_defaults(cfg, game['id'], only_missing=True)
                 if n:
                     JOB.push({'ev': 'say', 'msg': f"{n} réglage(s) par défaut pré-rempli(s) dans la fenêtre du jeu"})
-                msg = import_save(cfg, game['id'], only_if_empty=True)
-                if msg:
-                    JOB.push({'ev': 'say', 'msg': msg})
             except Exception as e:
                 JOB.push({'ev': 'say', 'msg': f'Après le build : {e}', 'err': True})
         what = 'build' if cfg.get('cleanAfterBuild') == '1' and not keep_build else 'obsolete' if cfg.get('cleanObsolete', '1') != '0' else None
@@ -1105,22 +1065,6 @@ def cancel_build():
         threading.Timer(8, lambda: JOB.busy() and os.killpg(JOB.proc.pid, signal.SIGKILL)).start()
 
 
-def import_save(cfg, gid, only_if_empty):
-    """Copie la sauvegarde des anciens portages NX2Apple (ROM/Switch/save/<id>) vers celle des apps nxnative."""
-    src = Path(cfg['oldSaveDir']) / gid
-    dst = NX_SUPPORT / gid / 'save'
-    if not src.is_dir():
-        return None
-    if dst.is_dir() and any(dst.iterdir()):
-        if only_if_empty:
-            return None
-        backup = dst.with_name(f"save.avant-{time.strftime('%Y%m%d-%H%M%S')}")
-        dst.rename(backup)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst, ignore=shutil.ignore_patterns('.*'))
-    return f"Sauvegarde reprise depuis {src}"
-
-
 # ---------- HTTP ----------
 
 class Handler(BaseHTTPRequestHandler):
@@ -1157,11 +1101,11 @@ class Handler(BaseHTTPRequestHandler):
         if u.path in ('/', '/index.html'):
             html = (HERE / 'index.html').read_text().replace('__TOKEN__', TOKEN)
             return self.send(200, html.encode(), 'text/html; charset=utf-8')
-        m = re.fullmatch(r'/(icon|art)/([0-9A-F]{16})\.(png|jpg)', u.path)
+        m = re.fullmatch(r'/icon/([0-9A-F]{16})\.(png|jpg)', u.path)
         if m:
-            p = (ICONS if m.group(1) == 'icon' else ARTWORK) / f'{m.group(2)}.{m.group(3)}'
+            p = ICONS / f'{m.group(1)}.{m.group(2)}'
             if p.exists():
-                return self.send(200, p.read_bytes(), 'image/png' if m.group(3) == 'png' else 'image/jpeg')
+                return self.send(200, p.read_bytes(), 'image/png' if m.group(2) == 'png' else 'image/jpeg')
             return self.send(404, {})
         if not self.authed(qs):
             return self.send(403, {'error': 'jeton invalide'})
@@ -1290,9 +1234,6 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     args = ['open', target]
                 subprocess.Popen(args); return self.send(200, {'ok': True})
-            if u.path == '/api/import-save':
-                msg = import_save(cfg, req['id'], only_if_empty=False)
-                return self.send(200, {'ok': True, 'msg': msg or 'Aucune ancienne sauvegarde.'})
             if u.path == '/api/prefs/get':
                 return self.send(200, game_prefs(req['id']))
             if u.path == '/api/prefs/set':
