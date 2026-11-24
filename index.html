@@ -488,7 +488,18 @@ function plats(r) { const p = bPlat(r); return p === 'both' ? ['mac-app', 'ios']
 function bGames() {
   const f = B.filter.trim().toLowerCase();
   return S.games.filter(g => g.hasBase && (!f || g.name.toLowerCase().includes(f) || g.id.toLowerCase().includes(f)))
-    .filter(g => B.show === 'all' || (B.show === 'never' ? !g.builds.length : B.show === 'stale' ? g.builds.some(b => b.stale) : g.profile));
+    .filter(g => B.show === 'all' || (B.show === 'never' ? !g.builds.length : B.show === 'stale' ? g.builds.some(b => b.stale)
+      : B.show === 'changed' ? bChanged(g) : g.profile));
+}
+// Changements de nxnative qui citent ce jeu depuis son build le plus ancien (0 si à jour ou seulement des changements généraux)
+function bChanged(g) { return Math.max(0, ...g.builds.filter(b => b.stale).map(b => b.changes?.game || 0)); }
+function bChip(b) {
+  const p = PLAT[b.platform], c = b.changes, pl = n => n > 1 ? 's' : '';
+  if (!b.stale) return `<span class="chip ok" title="construit avec la version actuelle de nxnative">${p} ✓ à jour</span>`;
+  if (!c) return `<span class="chip warn" title="nxnative a changé depuis ce build">${p} ✓ ancien</span>`;
+  if (!c.game) return `<span class="chip" title="${c.total} changement${pl(c.total)} de nxnative depuis ce build, aucun ne cite ce jeu : moteur, autres jeux">${p} ✓ · rien pour ce jeu</span>`;
+  const tip = `${c.total} changement${pl(c.total)} de nxnative depuis ce build, dont ${c.game} pour ce jeu :\n` + c.items.map(i => `${i.date}  ${i.s}`).join('\n') + (c.game > c.items.length ? `\n… et ${c.game - c.items.length} plus anciens` : '');
+  return `<span class="chip warn" title="${esc(tip)}">${p} ✓ · ${c.game} changement${pl(c.game)} pour ce jeu</span>`;
 }
 function openBatch() { sel = BATCH; B.language ||= S.config.language || 'fr'; renderList(); renderBatch(); $('#detail').scrollTop = 0; }
 function bCount() { return S.games.reduce((n, g) => n + (B.rows[g.id]?.on && g.hasBase ? plats(B.rows[g.id]).length : 0), 0); }
@@ -498,9 +509,9 @@ function renderBatch() {
     <p class="muted small" style="margin-top:0">Coche les jeux, choisis pour chacun la mise à jour, les DLC et la plateforme, puis ajoute-les à la file : ils se construisent l'un après l'autre, tout seuls. Un jeu déjà en file pour la même plateforme garde sa place et prend les nouveaux choix.</p>
     <div class="row"><label class="k">Pour (par défaut)</label><span class="seg">${PSEG.map(([k, l]) => `<button class="${B.platform === k ? 'on' : ''}" onclick="bSetPlat('${k}')">${l}</button>`).join('')}</span><span class="muted small">chaque ligne peut changer</span></div>
     <div class="row"><label class="k">Langue du jeu</label><select onchange="B.language=this.value">${LANGS.map(([c, n]) => `<option value="${c}" ${B.language === c ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
-    <div class="row"><label class="k">Afficher</label><span class="seg">${[['all', 'Tous'], ['profile', 'Avec profil'], ['never', 'Jamais construits'], ['stale', 'À reconstruire']].map(([k, l]) => `<button class="${B.show === k ? 'on' : ''}" onclick="B.show='${k}';renderBatch()">${l}</button>`).join('')}</span>
+    <div class="row"><label class="k">Afficher</label><span class="seg">${[['all', 'Tous'], ['profile', 'Avec profil'], ['never', 'Jamais construits'], ['changed', 'Changements pour le jeu'], ['stale', 'Anciens builds']].map(([k, l]) => `<button class="${B.show === k ? 'on' : ''}" onclick="B.show='${k}';renderBatch()">${l}</button>`).join('')}</span>
       <input type="text" placeholder="Chercher…" style="width:160px" value="${esc(B.filter)}" oninput="B.filter=this.value;bRenderRows()"></div>
-    <div class="row small"><button class="link" onclick="bAll(true)">Tout cocher</button><button class="link" onclick="bAll(false)">Tout décocher</button>
+    <div class="row small"><button class="link" onclick="bAll(true)">Tout cocher</button><button class="link" onclick="bAll(false)">Tout décocher</button><button class="link" onclick="bAllChanged()" title="les jeux dont un changement de nxnative depuis leur build les cite">Cocher ceux qui ont des changements</button>
       <span class="muted">· cochés :</span><button class="link" onclick="bSetAll('update','all')">màj récente</button><button class="link" onclick="bSetAll('update','none')">sans màj</button>
       <button class="link" onclick="bSetAll('dlc',true)">avec DLC</button><button class="link" onclick="bSetAll('dlc',false)">sans DLC</button></div>
     <div id="bRows"></div>
@@ -514,7 +525,7 @@ function bRenderRows() {
   el.innerHTML = list.length ? list.map(g => {
     const r = bRow(g), p = bPlat(r), chips = [];
     chips.push(g.profile ? '<span class="chip ok">profil</span>' : '<span class="chip warn">sans profil</span>');
-    for (const b of g.builds) chips.push(`<span class="chip ${b.stale ? 'warn' : 'ok'}">${PLAT[b.platform]} ✓${b.stale ? (b.changes?.game ? ` (ancien, ${b.changes.game} changement${b.changes.game > 1 ? 's' : ''} pour ce jeu)` : ' (ancien)') : ''}</span>`);
+    for (const b of g.builds) chips.push(bChip(b));
     if (S.queue.items.some(i => i.id === g.id)) chips.push('<span class="chip warn">en file</span>');
     const upSel = g.updates.length
       ? `<select onchange="bSet('${g.id}','update',this.value)"><option value="all" ${r.update === 'all' ? 'selected' : ''}>la plus récente (${upd(g.updates.at(-1).ver).replace('mise à jour ', '')})</option>${g.updates.slice(0, -1).map(u => `<option value="${u.ver}" ${String(r.update) === String(u.ver) ? 'selected' : ''}>${upd(u.ver)}</option>`).join('')}<option value="none" ${r.update === 'none' ? 'selected' : ''}>sans màj</option></select>`
@@ -531,11 +542,14 @@ function bFooter() {
   const on = S.games.filter(g => B.rows[g.id]?.on && g.hasBase);
   const size = on.reduce((t, g) => { const r = B.rows[g.id], ups = r.update === 'all' ? g.updates.slice(-1) : g.updates.filter(u => String(u.ver) === String(r.update));
     return t + [g.base, ...ups, ...(r.dlc ? g.dlc : [])].reduce((s, f) => s + (f?.size || 0), 0); }, 0);
-  $('#bNote').textContent = n ? `${on.length} jeu${on.length > 1 ? 'x' : ''} · ${gb(size)} de fichiers · ${S.job.busy || S.queue.items.length ? 'démarrera après les builds déjà en file' : 'démarre tout de suite'}` : '';
+  const ch = on.filter(g => g.builds.length), withCh = ch.filter(bChanged).length;
+  const rebuild = ch.length ? ` · ${ch.length} déjà construit${ch.length > 1 ? 's' : ''}, dont ${withCh ? `${withCh} avec des changements pour le jeu` : 'aucun avec des changements pour le jeu'}` : '';
+  $('#bNote').textContent = n ? `${on.length} jeu${on.length > 1 ? 'x' : ''}${rebuild} · ${gb(size)} de fichiers · ${S.job.busy || S.queue.items.length ? 'démarrera après les builds déjà en file' : 'démarre tout de suite'}` : '';
 }
 function bSet(id, k, v) { const r = bRow(S.games.find(x => x.id === id)); r[k] = v; if (k !== 'on') r.on = true; bRenderRows(); }
 function bSetPlat(k) { B.platform = k; store.set('batchPlat', k); Object.values(B.rows).forEach(r => r.platform = null); renderBatch(); }
 function bAll(on) { bGames().forEach(g => bRow(g).on = on); bRenderRows(); }
+function bAllChanged() { bGames().forEach(g => { if (bChanged(g)) bRow(g).on = true; }); bRenderRows(); }
 function bSetAll(k, v) { bGames().forEach(g => { const r = bRow(g); if (r.on) r[k] = k === 'update' && !g.updates.length ? 'none' : v; }); bRenderRows(); }
 async function bSubmit() {
   const items = [];
