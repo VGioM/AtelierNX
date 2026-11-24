@@ -659,6 +659,44 @@ def walk(rom):
                 yield Path(root) / f
 
 
+def same_commit(a, b):
+    """Deux identifiants de commit abrégés à des longueurs différentes (git rev-parse --short, DMCommit de l'app)."""
+    a, b = (a or '').lower(), (b or '').lower()
+    return bool(a and b) and (a.startswith(b) or b.startswith(a))
+
+
+def adopt_builds(cfg, state):
+    """Apps Mac du dossier des apps absentes de state.json (construites sur un autre Mac, ou avant une
+    réinstallation) : le jeu et le commit nxnative sont lus dans leur Info.plist (CFBundleIdentifier
+    org.nxnative.<id>, DMCommit). Renvoie True si state a été complété."""
+    out_dir = Path(cfg['outDir']) if cfg.get('outDir') else None
+    if not out_dir or not out_dir.is_dir():
+        return False
+    known = {Path(b['out']).name for v in state.values() for b in v.get('builds', {}).values() if b.get('out')}
+    added = False
+    for app in sorted(out_dir.glob('*.app')):
+        if app.name in known:
+            continue
+        try:
+            with open(app / 'Contents/Info.plist', 'rb') as f:
+                info = plistlib.load(f)
+        except Exception:
+            continue
+        m = re.fullmatch(r'org\.nxnative\.([0-9a-fA-F]{16})', str(info.get('CFBundleIdentifier', '')))
+        commit = str(info.get('DMCommit', ''))
+        if not m or not re.fullmatch(r'[0-9a-fA-F]{7,40}', commit):
+            continue
+        gid = m.group(1).upper()
+        builds = state.setdefault(gid, {}).setdefault('builds', {})
+        if 'mac-app' in builds and Path(builds['mac-app']['out']).exists():
+            continue   # le jeu a déjà une app connue (deux copies dans le dossier)
+        builds['mac-app'] = {'out': str(app), 'language': str(info.get('DMLanguage', '')), 'commit': commit[:12],
+                             'built': time.strftime('%Y-%m-%d %H:%M', time.localtime(app.stat().st_mtime)),
+                             'found': True}
+        added = True
+    return added
+
+
 def scan(cfg):
     if not cfg['romDir']:
         return [], [], []
@@ -666,6 +704,10 @@ def scan(cfg):
     cache = load_json(IDS_CACHE, {})
     n0 = len(cache)
     hk = header_key(cfg)
+    # Sans header_key, un XCI ou un NSP sans ticket ne se lit que par l'identifiant [0100…] de son nom.
+    no_keys = (None if hk else f"prod.keys introuvable ({cfg['keys']}) : il faut ses clés pour lire ce fichier, "
+               "dont le nom ne contient pas l'identifiant [0100…]" if not Path(cfg['keys']).is_file()
+               else f"header_key absente de prod.keys ({cfg['keys']}) : il faut cette clé pour lire ce fichier")
     games, orphans, archives = {}, [], []
     for f in walk(rom):
         ext = f.suffix.lower()
@@ -681,7 +723,8 @@ def scan(cfg):
             continue
         r = identify(cfg, f, cache, hk)
         if not r['tid']:
-            orphans.append({'path': str(f), 'name': f.name, 'rel': rel, 'why': 'identifiant illisible'})
+            why = no_keys if no_keys and ext != '.nup' else 'identifiant illisible'
+            orphans.append({'path': str(f), 'name': f.name, 'rel': rel, 'why': why, 'keys': why == no_keys})
             continue
         tid = int(r['tid'], 16)
         low = tid & 0xFFF
@@ -706,7 +749,10 @@ def scan(cfg):
             g['dlc'].append(e)
     if len(cache) != n0:
         save_json(IDS_CACHE, cache)
-    state = load_json(STATE, {})
+    with LOCK:   # un build qui se termine écrit aussi state.json
+        state = load_json(STATE, {})
+        if adopt_builds(cfg, state):
+            save_json(STATE, state)
     state_moved = False
     profiles = Path(cfg['nxnative']) / 'dm/games'
     head = git(cfg, 'rev-parse', '--short', 'HEAD')[1] if (Path(cfg['nxnative']) / '.git').exists() else ''
@@ -726,7 +772,7 @@ def scan(cfg):
             if not Path(b['out']).exists() and moved and moved.exists():   # app rangée ailleurs puis dossier des apps changé
                 b['out'] = str(moved); state_moved = True
             if Path(b['out']).exists():
-                stale = bool(head and b.get('commit') and b['commit'] != head)
+                stale = bool(head and b.get('commit') and not same_commit(b['commit'], head))
                 builds.append({**b, 'platform': plat, 'stale': stale,
                                'changes': game_changes(cfg, gid, name, b['commit'], head_full) if stale else None})
         save_dst = NX_SUPPORT / gid / 'save'

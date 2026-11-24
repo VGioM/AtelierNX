@@ -311,7 +311,7 @@ function renderDetail() {
   if (g.builds.length) {
     h += `<div class="card"><h3>Prêt à jouer</h3>`;
     for (const b of g.builds) {
-      h += `<div class="row"><b>${PLAT[b.platform]}</b><span class="muted small">construit le ${esc(b.built)} · langue ${esc(b.language)} · nxnative ${esc(b.commit)}</span></div>`;
+      h += `<div class="row"><b>${PLAT[b.platform]}</b><span class="muted small">construit le ${esc(b.built)} · langue ${esc(b.language)} · nxnative ${esc(b.commit)}${b.found ? ' · retrouvée dans le dossier des apps' : ''}</span></div>`;
       if (b.stale) h += changesNote(b.changes);
       h += `<div class="row">`;
       if (b.platform === 'mac-app') h += `<button class="primary" onclick="openIt('${g.id}','mac-app')">▶ Jouer</button>`;
@@ -329,7 +329,14 @@ function renderDetail() {
 
   // Construction
   h += `<div class="card"><h3>${g.builds.length ? 'Reconstruire' : 'Construire'}</h3>`;
-  if (!g.hasBase) h += `<div class="note err">Le jeu de base n'est pas dans le dossier : impossible de construire.</div>`;
+  if (!g.hasBase) {
+    // Un fichier du même dossier illisible faute de prod.keys est sans doute ce jeu de base.
+    const dir = r => r.includes('/') ? r.slice(0, r.lastIndexOf('/')) : '';
+    const unread = g.folder ? S.orphans.filter(o => o.keys && dir(o.rel) === g.folder) : [];
+    h += unread.length
+      ? `<div class="note err">Jeu de base non reconnu : ${unread.map(o => `<code>${esc(o.name)}</code>`).join(', ')} est sans doute ce jeu, mais il faut <code>prod.keys</code> pour le lire (${esc(S.config.keys)}). Ajoutez-le puis rechargez.</div>`
+      : `<div class="note err">Le jeu de base n'est pas dans le dossier : impossible de construire.</div>`;
+  }
   h += `<div class="row"><label class="k">Pour</label><span class="seg">${Object.entries(PLAT).map(([k, v]) => `<button class="${o.platform === k ? 'on' : ''}" onclick="setOpt('platform','${k}')">${v}</button>`).join('')}</span></div>`;
   h += `<div class="row"><label class="k">Langue du jeu</label><select onchange="setOpt('language',this.value)">${LANGS.map(([c, n]) => `<option value="${c}" ${o.language === c ? 'selected' : ''}>${n}</option>`).join('')}</select><span class="muted small">modifiable ensuite dans la fenêtre du jeu</span></div>`;
   const nup = g.base?.ext === '.nup' ? g.base.nup : null;
