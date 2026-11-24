@@ -212,10 +212,27 @@ async function refresh() {
   S = await api('/api/state');
   S.queue ||= { items: [], paused: false, history: [] };   // serveur d'une version précédente
   const [h, d] = (S.nxnative.head || '|').split('|');
-  $('#nxhead').textContent = S.nxnative.ok ? `nxnative ${h} (${d})` : 'nxnative introuvable : vérifie les réglages';
+  renderNxHead(h, d);
   renderList();
   if (sel) renderDetail();
   if (S.job.busy && !es) follow();
+}
+
+// nxnative absent (autre utilisateur, nouveau Mac) : proposer de l'installer dans le dossier des Réglages (server.py install_nxnative)
+let nxPoll = null;
+function renderNxHead(h, d) {
+  const nx = S.nxnative, ins = nx.install || {}, el = $('#nxhead');
+  clearTimeout(nxPoll);
+  if (ins.running) { el.textContent = ins.step || 'Installation de nxnative…'; nxPoll = setTimeout(refresh, 1500); return; }
+  if (nx.ok) { el.textContent = `nxnative ${h} (${d})`; if (ins.note) $('#nxupd').textContent = ins.note; return; }
+  el.innerHTML = `nxnative introuvable dans <code>${esc(nx.path)}</code> <button class="link" onclick="installNx()">${ins.error ? 'Réessayer' : 'Installer nxnative'}</button>`
+    + (ins.error ? `<div class="note err small" style="white-space:pre-wrap;margin-top:4px">${esc(ins.error)}</div>` : '');
+}
+async function installNx() {
+  if (!confirm(`Installer nxnative dans ${S.nxnative.path} ?\n\nTéléchargement depuis github.com/seedds/nxnative (environ 1 Go), puis création de son environnement Python et installation des modules. Pour l'installer ailleurs, change « Dossier nxnative » dans Réglages d'abord.`)) return;
+  $('#nxupd').textContent = '';
+  try { await api('/api/nx/install', {}); } catch (e) { alertBox(e.message); }
+  refresh();
 }
 
 function renderList() {
@@ -602,6 +619,7 @@ $('#btnCheck').onclick = async () => {
   const el = $('#nxupd'); el.textContent = 'Vérification…';
   try {
     const r = await api('/api/nx/check', {});
+    if (r.missing) { el.innerHTML = `${esc(r.msg)} <button class="link" onclick="installNx()">Installer nxnative</button>`; return; }
     if (!r.ok) { el.textContent = 'Échec : ' + r.msg; return; }
     if (!r.behind) { el.textContent = 'nxnative est à jour.'; return; }
     el.innerHTML = `${r.behind} nouveauté(s) <button class="link" id="btnPull" title="${esc(r.log)}">Mettre à jour</button>`;

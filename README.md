@@ -38,7 +38,7 @@ Réglages et état : `~/Library/Application Support/AtelierNX/` (`config.json`, 
    ```
    brew install xcodegen zstd glslang dotnet-sdk python@3.13
    ```
-2. Cloner nxnative et lui créer un environnement Python (3.12 ou plus) :
+2. nxnative : si Atelier NX ne le trouve pas dans le dossier des Réglages (`~/nxnative` par défaut), il propose de l'installer (bouton « Installer nxnative » en haut : clone, environnement `.venv` et modules Python ; il faut un Python 3.12+ de Homebrew). Pour l'installer ailleurs, changer « Dossier nxnative » dans Réglages d'abord. À la main, c'est l'équivalent de :
    ```
    git clone https://github.com/seedds/nxnative ~/nxnative
    cd ~/nxnative

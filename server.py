@@ -48,9 +48,9 @@ def save_json(p, data):
     tmp = p.with_suffix('.tmp'); tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False)); tmp.replace(p)
 
 
-def find_python(nxnative):
+def find_python(nxnative, venv=True):
     """Premier Python 3.12+ trouvé : venv du clone nxnative, puis Homebrew, python.org, /usr/local."""
-    cands = [Path(nxnative) / '.venv/bin/python', Path(nxnative) / 'venv/bin/python']
+    cands = [Path(nxnative) / '.venv/bin/python', Path(nxnative) / 'venv/bin/python'] if venv else []
     for d in ('/opt/homebrew/bin', '/Library/Frameworks/Python.framework/Versions/Current/bin', '/usr/local/bin'):
         cands += [Path(d) / f'python3.{m}' for m in range(20, 11, -1)]
     return next((str(c) for c in cands if c.exists()), 'python3')
@@ -189,6 +189,91 @@ def ensure_prereqs(cfg, say=lambda msg, err=False: None, force=False, extra=None
             PREREQ.update(key=key, missing=missing or ['?'], error=str(e))
             say(str(e), True)
             raise
+
+
+# ---------- installation de nxnative ----------
+# Sur un Mac où nxnative n'est pas encore là (autre utilisateur, nouveau Mac), la page propose de l'installer dans le
+# dossier des Réglages (~/nxnative par défaut) : clone git, environnement Python .venv, puis les modules Python.
+NX_REPO = 'https://github.com/seedds/nxnative'
+NX_INSTALL = {'running': False, 'step': '', 'error': '', 'note': ''}
+BREW_TOOLS = {'xcodegen': 'xcodegen', 'zstd': 'zstd', 'glslangValidator': 'glslang', 'dotnet': 'dotnet-sdk'}
+
+
+def nx_present(cfg):
+    return (Path(cfg['nxnative']) / NX_SCRIPT).exists()
+
+
+def install_nxnative():
+    cfg = config()
+    target = Path(cfg['nxnative']).expanduser()
+    step = lambda s: NX_INSTALL.update(step=s)
+    try:
+        if not nx_present(cfg):
+            if target.exists() and (not target.is_dir() or any(target.iterdir())):
+                raise ValueError(f"Le dossier {target} existe déjà et ne contient pas nxnative. "
+                                 "Choisis un autre dossier nxnative dans Réglages (ou vide celui-ci).")
+            if not shutil.which('git', path=tool_env()['PATH']):
+                raise ValueError('git est introuvable : installe Xcode (ou xcode-select --install), puis réessaie.')
+            part = target.with_name(target.name + '.partial')
+            shutil.rmtree(part, ignore_errors=True)
+            part.parent.mkdir(parents=True, exist_ok=True)
+            # Sans les anciennes versions des fichiers (--filter=blob:none) : l'historique est complet pour les messages
+            # de commit et git pull, mais le téléchargement est bien plus léger.
+            p = subprocess.Popen(['git', 'clone', '--progress', '--filter=blob:none', NX_REPO, str(part)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=tool_env())
+            tail, buf = [], b''
+            while chunk := p.stderr.read(256):
+                buf += chunk
+                *lines, buf = re.split(rb'[\r\n]', buf)
+                for l in (x.decode(errors='replace').strip() for x in lines):
+                    if not l:
+                        continue
+                    tail = (tail + [l])[-5:]
+                    m = re.match(r'Receiving objects:\s+(\d+)%', l)
+                    if m:
+                        step(f'Téléchargement de nxnative : {m.group(1)} %')
+                    elif l.startswith(('Resolving deltas', 'Updating files')):
+                        step('Écriture des fichiers de nxnative…')
+            if p.wait():
+                shutil.rmtree(part, ignore_errors=True)
+                raise ValueError('Échec du téléchargement de nxnative :\n' + '\n'.join(tail))
+            if target.is_dir():
+                target.rmdir()   # dossier vide
+            part.rename(target)
+        if not load_json(CONFIG, {}).get('python') and not (target / '.venv/bin/python').exists():
+            base = find_python(target, venv=False)
+            if base == 'python3':
+                raise ValueError('nxnative est installé, mais il lui faut Python 3.12 ou plus : '
+                                 'brew install python@3.13, puis « Réessayer ».')
+            step('Création de l\'environnement Python…')
+            r = subprocess.run([base, '-m', 'venv', str(target / '.venv')], capture_output=True, text=True, env=tool_env(), timeout=300)
+            if r.returncode:
+                raise ValueError(f'Création de l\'environnement Python impossible : {(r.stderr or r.stdout).strip()[-300:]}')
+        cfg = config()
+        step('Installation des modules Python…')
+        ok, outp = pip_install(cfg, ['nsz', 'pycryptodome'])   # .nsz/.xcz et en-têtes NCA, en plus de ceux du script
+        if not ok:
+            raise ValueError(f'Installation de nsz et pycryptodome impossible :\n{outp}')
+        try:
+            ensure_prereqs(cfg, force=True)
+        except PrereqError as e:
+            raise ValueError(str(e))
+        brew = [pkg for tool, pkg in BREW_TOOLS.items() if not shutil.which(tool, path=tool_env()['PATH'])]
+        NX_INSTALL['note'] = ('nxnative est installé. Il manque encore des outils pour construire : brew install ' + ' '.join(brew)
+                              if brew else 'nxnative est installé.')
+        build_catalog(cfg, fetch=False)
+    except Exception as e:
+        NX_INSTALL['error'] = str(e)
+    finally:
+        NX_INSTALL.update(running=False, step='')
+
+
+def start_nx_install():
+    with LOCK:
+        if NX_INSTALL['running']:
+            return
+        NX_INSTALL.update(running=True, step='Préparation…', error='', note='')
+    threading.Thread(target=install_nxnative, daemon=True).start()
 
 
 # ---------- bibliothèque ----------
@@ -1274,12 +1359,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/state':
             games, orphans, archives = scan(cfg)
             catalog = catalog_for(cfg, games)
-            nx_ok = (Path(cfg['nxnative']) / 'scripts/build_ipa_from_nsp.py').exists()
+            nx_ok = nx_present(cfg) and not NX_INSTALL['running']
             head = git(cfg, 'log', '-1', '--format=%h|%cd', '--date=format:%d/%m %H:%M')[1] if nx_ok else ''
             return self.send(200, {
                 'config': cfg, 'games': games, 'orphans': orphans, 'archives': archives, 'unzipping': sorted(UNZIPPING), 'catalog': catalog,
                 'rom': bool(cfg['romDir']) and Path(cfg['romDir']).is_dir(), 'keys': Path(cfg['keys']).is_file(),
-                'nxnative': {'ok': nx_ok, 'head': head},
+                'nxnative': {'ok': nx_ok, 'head': head, 'path': cfg['nxnative'], 'install': NX_INSTALL},
                 'prereqs': {'missing': PREREQ['missing'], 'error': PREREQ['error']},
                 'job': {'busy': JOB.busy(), 'info': JOB.info, 'result': JOB.result, 'item': JOB.item},
                 'queue': queue(),
@@ -1416,6 +1501,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif p.exists():
                     p.unlink()
                 return self.send(200, {'ok': True})
+            if u.path in ('/api/nx/check', '/api/nx/pull') and not nx_present(cfg):   # dossier vide ou absent : pas un clone
+                return self.send(200, {'ok': False, 'missing': True, 'msg': f"nxnative n'est pas installé dans {cfg['nxnative']}."})
             if u.path == '/api/nx/check':
                 code, outp = git(cfg, 'fetch', '--quiet')
                 if code:
@@ -1448,6 +1535,8 @@ class Handler(BaseHTTPRequestHandler):
                 except PrereqError as e:
                     mods = str(e)
                 return self.send(200, {'ok': code == 0, 'msg': outp, 'modules': mods})
+            if u.path == '/api/nx/install':
+                start_nx_install(); return self.send(200, {'ok': True})
             if u.path == '/api/prereqs/install':
                 try:
                     installed = ensure_prereqs(cfg, force=True)
@@ -1508,7 +1597,8 @@ def main():
     save_json(SUPPORT / 'server.json', {'port': port, 'pid': os.getpid()})
     migrate_workdir(config())
     threading.Thread(target=catalog_loop, daemon=True).start()
-    threading.Thread(target=lambda: _quiet(ensure_prereqs, config()), daemon=True).start()   # vérifié dès le lancement
+    if nx_present(config()):   # sinon la page propose d'installer nxnative (qui installe aussi les modules)
+        threading.Thread(target=lambda: _quiet(ensure_prereqs, config()), daemon=True).start()   # vérifié dès le lancement
     threading.Timer(2.0, kick).start()         # reprend une file laissée non vide (sauf si elle est en pause)
     print(f'PORT {port}', flush=True)
     if a.open:
