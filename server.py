@@ -4,7 +4,7 @@
 Écoute sur 127.0.0.1 uniquement ; chaque requête /api doit porter le jeton injecté dans la page.
 Lancé par Atelier NX.app (ou à la main : python3 server.py --open).
 """
-import json, os, plistlib, re, secrets, shlex, shutil, signal, struct, subprocess, sys, threading, time, argparse, webbrowser
+import ast, json, os, plistlib, re, secrets, shlex, shutil, signal, struct, subprocess, sys, threading, time, argparse, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -88,9 +88,10 @@ def git(cfg, *args, timeout=120):
 NX_SCRIPT = 'scripts/build_ipa_from_nsp.py'
 FALLBACK_MODULES = ['lz4.block', 'capstone', 'fontTools', 'zbic', 'compression.zstd|backports.zstd']
 FALLBACK_PIP = ['lz4', 'capstone>=5,<6', 'fonttools', 'zbic', 'backports.zstd']
-PREREQ = {'key': None, 'missing': [], 'error': ''}   # dernier état connu, montré dans la page
+PREREQ = {'key': None, 'missing': [], 'error': '', 'step': ''}   # dernier état connu, montré dans la page (step : installation en cours)
 PREREQ_LOCK = threading.Lock()
 MISSING_RE = re.compile(r'missing modules: ([\w., ]+?)\s*(?:\(pip install ([^;)]+)|$)')
+TOOLS_RE = re.compile(r'tools not found|Metal compiler does not run|iOS SDK is not installed|Command Line Tools')   # check_prereqs
 
 
 class PrereqError(ValueError):
@@ -154,49 +155,215 @@ def pip_install(cfg, pkgs):
     return r.returncode == 0, (r.stdout + r.stderr).strip()[-600:]
 
 
-def ensure_prereqs(cfg, say=lambda msg, err=False: None, force=False, extra=None):
-    """Installe ce qui manque ; renvoie la liste des modules installés. PrereqError si quelque chose manque encore.
-    Le résultat est gardé tant que ni le Python ni le script de nxnative ne changent. extra : (modules, paquets) lus
-    dans le message d'erreur d'un build."""
+def ensure_prereqs(cfg, say=lambda msg, err=False: None, force=False, extra=None, platform=None, interactive=False):
+    """Installe ce qui manque (modules Python, puis outils du Mac : voir ensure_system) ; renvoie la liste de ce qui a
+    été installé. PrereqError si quelque chose manque encore. Les modules ne sont revérifiés que si le Python ou le script
+    de nxnative changent ; les outils du Mac, rapides à vérifier, à chaque appel. extra : (modules, paquets) lus dans le
+    message d'erreur d'un build. platform : 'ios' vérifie aussi xcodegen et le SDK iOS. interactive : peut ouvrir
+    Terminal (Homebrew), l'App Store (Xcode) ou demander le mot de passe administrateur (xcode-select)."""
     with PREREQ_LOCK:
+        installed = _ensure_modules(cfg, say, force, extra)
         try:
-            mtime = (Path(cfg['nxnative']) / NX_SCRIPT).stat().st_mtime
-        except OSError:
-            mtime = None
-        key = (cfg['python'], cfg['nxnative'], mtime)
-        if not force and PREREQ['key'] == key and not PREREQ['missing']:
-            return []
-        mods, pips = nx_requirements(cfg)
-        if extra:
-            mods = mods + [m for m in extra[0] if m not in mods]; pips = extra[1] + pips
-        missing = []
-        try:
-            missing = missing_modules(cfg, mods)
-            installed = []
-            if missing:
-                pkgs = pip_for(missing, pips)
-                say(f"nxnative a besoin de modules Python absents : {', '.join(missing)}. Installation de {' '.join(pkgs)}…")
-                ok, outp = pip_install(cfg, pkgs)
-                still = missing_modules(cfg, mods)
-                if still:
-                    raise PrereqError(f"Modules Python manquants pour nxnative : {', '.join(still)}. Installation impossible"
-                                      f" ({shlex.join([cfg['python'], '-m', 'pip', 'install', *pip_for(still, pips)])}) :\n{outp}")
-                installed = missing
-                say(f"Modules installés : {', '.join(missing)}")
-            PREREQ.update(key=key, missing=[], error='')
-            return installed
+            installed += ensure_system(cfg, say, platform, interactive)
         except PrereqError as e:
-            PREREQ.update(key=key, missing=missing or ['?'], error=str(e))
+            PREREQ.update(missing=['outils'], error=str(e))
             say(str(e), True)
             raise
+        PREREQ.update(missing=[], error='')
+        return installed
+
+
+# ---------- outils du Mac ----------
+# nxnative vérifie aussi Xcode, des outils Homebrew (xcodegen, zstd, glslang), la chaîne Metal (téléchargée à part depuis
+# Xcode 26) et, pour l'iPhone, le SDK iOS : sans eux, chaque build échoue en une seconde. La liste des outils est lue dans
+# son check_prereqs (dict « tools = {outil: 'brew install paquet' | 'Xcode'} »), comme les modules Python.
+FALLBACK_TOOLS = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'zstd': 'brew install zstd',
+                  'make': 'Xcode', 'glslangValidator': 'brew install glslang'}
+BREW_URL = 'https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh'
+XCODE_STORE = 'macappstore://apps.apple.com/app/id497799835'
+OPENED = set()   # Terminal (Homebrew) ou App Store (Xcode) déjà ouverts pendant cette session : pas à chaque build
+
+
+def nx_tools(cfg):
+    try:
+        src = (Path(cfg['nxnative']) / NX_SCRIPT).read_text()
+        i = src.find('def check_prereqs'); j = src.find('\ndef ', i + 1)
+        m = re.search(r'tools = (\{[^}]*\})', src[i:j if j > 0 else None]) if i >= 0 else None
+        tools = ast.literal_eval(m.group(1)) if m else None
+        if isinstance(tools, dict) and tools:
+            return tools
+    except (OSError, ValueError, SyntaxError):
+        pass
+    return dict(FALLBACK_TOOLS)
+
+
+def brew_bin():
+    return shutil.which('brew', path=tool_env()['PATH'])
+
+
+def sh_run(cmd, timeout=600, **kw):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, env=tool_env(), timeout=timeout, **kw)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        return -1, str(e)
+
+
+def as_admin(shell_cmd):
+    """Commande lancée avec le mot de passe administrateur (fenêtre de macOS). Renvoie (code, sortie)."""
+    script = f'do shell script {json.dumps(shell_cmd)} with administrator privileges'
+    return sh_run(['osascript', '-e', script], timeout=1800)
+
+
+def open_once(what, cmd):
+    if what not in OPENED:
+        OPENED.add(what)
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def brew_install(pkgs, say):
+    brew = brew_bin()
+    say(f"Installation avec Homebrew : {' '.join(pkgs)}…")
+    code, outp = sh_run([brew, 'install', *pkgs], timeout=3600, input='')
+    return code == 0, outp[-600:]
+
+
+def need_homebrew(interactive, what):
+    if interactive:
+        open_once('brew', ['osascript', '-e', 'tell application "Terminal" to activate', '-e',
+                           f'tell application "Terminal" to do script {json.dumps(f"/bin/bash -c \"$(curl -fsSL {BREW_URL})\"")}'])
+        how = ("Son installation vient de s'ouvrir dans Terminal (elle demande ton mot de passe) ; "
+               "quand elle est finie, clique sur « Réessayer l'installation ».")
+    else:
+        how = 'Lance un build ou « Réessayer l\'installation » pour ouvrir son installation dans Terminal.'
+    raise PrereqError(f'Homebrew est nécessaire pour installer {what}, et il n\'est pas installé. {how}')
+
+
+def ensure_xcode(say, interactive):
+    """Xcode installé, sélectionné (pas seulement les Command Line Tools), licence acceptée et premier lancement fait."""
+    dev = sh_run(['xcode-select', '-p'], timeout=30)[1]
+    code, outp = sh_run(['xcodebuild', '-version'], timeout=60)
+    if code == 0 and 'CommandLineTools' not in dev:
+        return []
+    apps = sorted(Path('/Applications').glob('Xcode*.app'), key=lambda p: (p.name != 'Xcode.app', p.name))
+    if not apps:
+        if interactive:
+            open_once('xcode', ['open', XCODE_STORE])
+        raise PrereqError("Xcode n'est pas installé : nxnative s'en sert pour compiler. "
+                          + ("Sa page vient de s'ouvrir dans l'App Store ; " if interactive else "Installe-le depuis l'App Store ; ")
+                          + "une fois installé, ouvre-le une fois puis clique sur « Réessayer l'installation ».")
+    if not interactive:
+        raise PrereqError(f"Xcode est installé ({apps[0]}) mais pas prêt (licence ou sélection) : "
+                          "clique sur « Réessayer l'installation » (mot de passe administrateur demandé).")
+    say("Préparation d'Xcode (sélection, licence, premier lancement) : macOS demande le mot de passe administrateur…")
+    x = shlex.quote(str(apps[0]))
+    code, outp = as_admin(f'xcode-select -s {x} && xcodebuild -license accept && xcodebuild -runFirstLaunch')
+    if sh_run(['xcodebuild', '-version'], timeout=60)[0]:
+        raise PrereqError(f"Xcode n'a pas pu être préparé ({outp[-300:] or 'annulé'}). "
+                          f"À la main : sudo xcode-select -s {x} && sudo xcodebuild -license accept")
+    return ['Xcode (licence et sélection)']
+
+
+def ensure_component(say, check, download, label, size):
+    if sh_run(check, timeout=60)[0] == 0:
+        return []
+    say(f"Il manque : {label}. Téléchargement par Xcode ({size}, quelques minutes)…")
+    outp = download_with_progress(download, label, say)
+    if sh_run(check, timeout=60)[0]:   # xcodebuild -downloadComponent sort parfois avec 0 même en échec
+        tail = '\n'.join(l for l in outp.splitlines() if 'error' in l.lower())[-400:] or outp[-400:]
+        raise PrereqError(f"{label} : téléchargement impossible ({shlex.join(download)}) :\n{tail}\n"
+                          "Vérifie la connexion (ou passe par Xcode → Réglages → Composants), puis « Réessayer l'installation ».")
+    say(f'Installé : {label}.')
+    return [label]
+
+
+def download_with_progress(cmd, label, say):
+    """xcodebuild -downloadComponent/-downloadPlatform écrit « Downloading... (12 MB of 838,9 MB downloaded) » ;
+    la progression est relayée toutes les 2 s. Renvoie la fin de la sortie."""
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=tool_env())
+    except OSError as e:
+        return str(e)
+    buf, last = '', 0.0
+    while chunk := p.stdout.read(512):
+        buf = (buf + chunk.decode(errors='replace'))[-4000:]
+        m = re.findall(r'\(([\d.,]+ \w+) of ([\d.,]+ \w+) downloaded\)', buf)
+        if m and time.time() - last > 2:
+            last = time.time(); say(f'{label} : {m[-1][0]} sur {m[-1][1]}…')
+    p.wait()
+    return re.sub(r'Downloading\.\.\. \([^)]*\)', '', buf).strip()
+
+
+def ensure_system(cfg, say=lambda msg, err=False: None, platform=None, interactive=False):
+    """Ce que nxnative vérifie avant chaque build (check_prereqs), installé quand c'est possible."""
+    ios = platform == 'ios'
+    installed = ensure_xcode(say, interactive)
+    tools = nx_tools(cfg)
+    if not ios:
+        tools.pop('xcodegen', None)   # nxnative ne s'en sert que pour le projet Xcode de l'IPA
+    path = tool_env()['PATH']
+    gone = {t: how for t, how in tools.items() if not shutil.which(t, path=path)}
+    brew_pkgs = [how.split()[-1] for how in gone.values() if how.startswith('brew install')]
+    other = [f'{t} ({how})' for t, how in gone.items() if not how.startswith('brew install')]
+    if other:
+        raise PrereqError('Outils introuvables pour nxnative : ' + ', '.join(other) + '.')
+    if brew_pkgs:
+        if not brew_bin():
+            need_homebrew(interactive, ' '.join(brew_pkgs))
+        ok, outp = brew_install(brew_pkgs, say)
+        still = [t for t in gone if not shutil.which(t, path=path)]
+        if still:
+            raise PrereqError(f"Installation impossible avec Homebrew (brew install {' '.join(brew_pkgs)}) :\n{outp}")
+        say(f"Installé avec Homebrew : {' '.join(brew_pkgs)}")
+        installed += brew_pkgs
+    installed += ensure_component(say, ['xcrun', '-sdk', 'macosx', 'metal', '--version'],
+                                  ['xcodebuild', '-downloadComponent', 'MetalToolchain'], 'Chaîne Metal', 'environ 850 Mo')
+    if ios:
+        installed += ensure_component(say, ['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'],
+                                      ['xcodebuild', '-downloadPlatform', 'iOS'], 'SDK iOS', 'plusieurs Go')
+    return installed
+
+
+def _ensure_modules(cfg, say, force, extra):
+    """Modules Python de nxnative (résultat gardé tant que le Python et le script ne changent pas)."""
+    try:
+        mtime = (Path(cfg['nxnative']) / NX_SCRIPT).stat().st_mtime
+    except OSError:
+        mtime = None
+    key = (cfg['python'], cfg['nxnative'], mtime)
+    if not force and PREREQ['key'] == key and not PREREQ['missing']:
+        return []
+    mods, pips = nx_requirements(cfg)
+    if extra:
+        mods = mods + [m for m in extra[0] if m not in mods]; pips = extra[1] + pips
+    missing = []
+    try:
+        missing = missing_modules(cfg, mods)
+        installed = []
+        if missing:
+            pkgs = pip_for(missing, pips)
+            say(f"nxnative a besoin de modules Python absents : {', '.join(missing)}. Installation de {' '.join(pkgs)}…")
+            ok, outp = pip_install(cfg, pkgs)
+            still = missing_modules(cfg, mods)
+            if still:
+                raise PrereqError(f"Modules Python manquants pour nxnative : {', '.join(still)}. Installation impossible"
+                                  f" ({shlex.join([cfg['python'], '-m', 'pip', 'install', *pip_for(still, pips)])}) :\n{outp}")
+            installed = missing
+            say(f"Modules installés : {', '.join(missing)}")
+        PREREQ.update(key=key, missing=[], error='')
+        return installed
+    except PrereqError as e:
+        PREREQ.update(key=key, missing=missing or ['?'], error=str(e))
+        say(str(e), True)
+        raise
 
 
 # ---------- installation de nxnative ----------
 # Sur un Mac où nxnative n'est pas encore là (autre utilisateur, nouveau Mac), la page propose de l'installer dans le
-# dossier des Réglages (~/nxnative par défaut) : clone git, environnement Python .venv, puis les modules Python.
+# dossier des Réglages (~/nxnative par défaut) : clone git, Python 3.12+ (Homebrew au besoin), environnement .venv, modules
+# Python, puis les outils du Mac (Xcode, outils Homebrew, chaîne Metal : ensure_system).
 NX_REPO = 'https://github.com/seedds/nxnative'
 NX_INSTALL = {'running': False, 'step': '', 'error': '', 'note': ''}
-BREW_TOOLS = {'xcodegen': 'xcodegen', 'zstd': 'zstd', 'glslangValidator': 'glslang', 'dotnet': 'dotnet-sdk'}
 
 
 def nx_present(cfg):
@@ -242,9 +409,17 @@ def install_nxnative():
             part.rename(target)
         if not load_json(CONFIG, {}).get('python') and not (target / '.venv/bin/python').exists():
             base = find_python(target, venv=False)
-            if base == 'python3':
-                raise ValueError('nxnative est installé, mais il lui faut Python 3.12 ou plus : '
-                                 'brew install python@3.13, puis « Réessayer ».')
+            if base == 'python3':   # pas de Python 3.12+ : celui de Homebrew
+                if not brew_bin():
+                    try:
+                        need_homebrew(True, 'Python 3.13')
+                    except PrereqError as e:
+                        raise ValueError(str(e))
+                step('Installation de Python 3.13 avec Homebrew…')
+                ok, outp = brew_install(['python@3.13'], lambda m, err=False: None)
+                base = find_python(target, venv=False)
+                if base == 'python3':
+                    raise ValueError(f'Installation de Python 3.13 impossible (brew install python@3.13) :\n{outp}')
             step('Création de l\'environnement Python…')
             r = subprocess.run([base, '-m', 'venv', str(target / '.venv')], capture_output=True, text=True, env=tool_env(), timeout=300)
             if r.returncode:
@@ -254,13 +429,11 @@ def install_nxnative():
         ok, outp = pip_install(cfg, ['nsz', 'pycryptodome'])   # .nsz/.xcz et en-têtes NCA, en plus de ceux du script
         if not ok:
             raise ValueError(f'Installation de nsz et pycryptodome impossible :\n{outp}')
-        try:
-            ensure_prereqs(cfg, force=True)
+        try:   # modules Python, puis Xcode, outils Homebrew et chaîne Metal
+            ensure_prereqs(cfg, say=lambda m, err=False: err or step(m), force=True, interactive=True)
         except PrereqError as e:
-            raise ValueError(str(e))
-        brew = [pkg for tool, pkg in BREW_TOOLS.items() if not shutil.which(tool, path=tool_env()['PATH'])]
-        NX_INSTALL['note'] = ('nxnative est installé. Il manque encore des outils pour construire : brew install ' + ' '.join(brew)
-                              if brew else 'nxnative est installé.')
+            raise ValueError(f'nxnative est installé, mais pas encore tout ce qu\'il faut pour construire :\n{e}')
+        NX_INSTALL['note'] = 'nxnative est installé, avec tout ce qu\'il faut pour construire.'
         build_catalog(cfg, fetch=False)
     except Exception as e:
         NX_INSTALL['error'] = str(e)
@@ -1105,8 +1278,24 @@ def enqueue_many(cfg, reqs):
     return out
 
 
+def prereq_step(msg, err=False):
+    PREREQ['step'] = '' if err else msg
+
+
 def kick():
     """Démarre l'élément suivant si rien ne tourne et que la file n'est pas en pause."""
+    # Ce qui manque (outils, chaîne Metal…) est installé avant de prendre QLOCK : un téléchargement de plusieurs minutes
+    # ne doit pas bloquer la page (ajout, ordre de la file). La page montre l'étape (PREREQ['step']).
+    q = queue()
+    if not JOB.busy() and not q['paused'] and q['items']:
+        try:
+            ensure_prereqs(config(), say=prereq_step, platform=q['items'][0].get('platform'), interactive=True)
+        except PrereqError:   # tous les jeux échoueraient : on attend « Réessayer l'installation »
+            with QLOCK:
+                q = queue(); q['paused'] = True; save_queue(q)
+            return
+        finally:
+            PREREQ['step'] = ''
     with QLOCK:
         while not JOB.busy():
             q = queue()
@@ -1117,7 +1306,7 @@ def kick():
                 start_build(config(), item)
                 JOB.item = item   # sous QLOCK : finish_item (fil du build) attend que ce soit fait
                 return
-            except PrereqError:   # modules Python impossibles à installer : tous les jeux échoueraient, on attend
+            except PrereqError:   # outils ou modules impossibles à installer : tous les jeux échoueraient, on attend
                 q = queue(); q['items'].insert(0, item); q['paused'] = True; save_queue(q)
                 return
             except Exception as e:
@@ -1129,10 +1318,10 @@ def finish_item(ok, code, cancelled, missing=None):
     with QLOCK:
         item, JOB.item = JOB.item, None
         if item and not ok and not cancelled and missing and not item.get('prereqRetry'):
-            # échec sur un module manquant que la vérification n'a pas vu : l'installer et relancer le jeu une fois
+            # échec sur un module ou un outil manquant que la vérification n'a pas vu : l'installer et relancer le jeu une fois
             try:
                 if ensure_prereqs(config(), say=lambda m, err=False: JOB.push({'ev': 'say', 'msg': m, 'err': err}),
-                                  force=True, extra=missing):
+                                  force=True, extra=missing, platform=item.get('platform'), interactive=True):
                     q = queue(); q['items'].insert(0, {**item, 'prereqRetry': True}); save_queue(q)
                     item = None
             except PrereqError:
@@ -1184,7 +1373,8 @@ def start_build(cfg, req):
         JOB.info = {'id': game['id'], 'name': game['name'], 'platform': platform, 'language': lang,
                     'started': time.time(), 'out': str(out), 'log': str(log)}
     try:
-        ensure_prereqs(cfg, say=lambda m, err=False: JOB.push({'ev': 'say', 'msg': m, 'err': err}))
+        ensure_prereqs(cfg, say=lambda m, err=False: JOB.push({'ev': 'say', 'msg': m, 'err': err}),
+                       platform=platform, interactive=True)
     except PrereqError:
         with JOB.cond:
             JOB.result = {'ok': False, 'code': None, 'out': str(out), 'cancelled': False}
@@ -1227,6 +1417,8 @@ def pump(proc, log, cfg, game, platform, lang, out, head, keep_build=False):
                 missing = ([x.strip() for x in m.group(1).split(',') if x.strip()], shlex.split(m.group(2) or ''))
             except ValueError:
                 missing = ([x.strip() for x in m.group(1).split(',') if x.strip()], [])
+        elif ev.get('ev') == 'say' and TOOLS_RE.search(str(ev.get('msg', ''))):
+            missing = missing or ([], [])   # outil du Mac : ensure_system le réinstalle
         JOB.push(ev)
     code = proc.wait(); t.join(timeout=5)
     ok = code == 0 and Path(out).exists()
@@ -1411,7 +1603,7 @@ class Handler(BaseHTTPRequestHandler):
                 'config': cfg, 'games': games, 'orphans': orphans, 'archives': archives, 'unzipping': sorted(UNZIPPING), 'catalog': catalog,
                 'rom': bool(cfg['romDir']) and Path(cfg['romDir']).is_dir(), 'keys': Path(cfg['keys']).is_file(),
                 'nxnative': {'ok': nx_ok, 'head': head, 'path': cfg['nxnative'], 'install': NX_INSTALL},
-                'prereqs': {'missing': PREREQ['missing'], 'error': PREREQ['error']},
+                'prereqs': {'missing': PREREQ['missing'], 'error': PREREQ['error'], 'step': PREREQ['step']},
                 'job': {'busy': JOB.busy(), 'info': JOB.info, 'result': JOB.result, 'item': JOB.item},
                 'queue': queue(),
             })
@@ -1584,10 +1776,14 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == '/api/nx/install':
                 start_nx_install(); return self.send(200, {'ok': True})
             if u.path == '/api/prereqs/install':
+                ios = any(i.get('platform') == 'ios' for i in queue()['items'])
+                OPENED.clear()   # clic explicite : rouvrir Terminal ou l'App Store si c'est encore nécessaire
                 try:
-                    installed = ensure_prereqs(cfg, force=True)
+                    installed = ensure_prereqs(cfg, say=prereq_step, force=True, platform='ios' if ios else None, interactive=True)
                 except PrereqError as e:
                     return self.send(200, {'ok': False, 'msg': str(e)})
+                finally:
+                    PREREQ['step'] = ''
                 with QLOCK:
                     q = queue(); q['paused'] = False; save_queue(q)
                 kick()

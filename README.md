@@ -18,6 +18,7 @@ Interface graphique simple pour [nxnative](https://github.com/seedds/nxnative) (
 - Bouton « Jouer », journal du jeu, dossier de sauvegarde du jeu (pour en faire une copie).
 - « Réglages du jeu » : les réglages de la fenêtre de lancement nxnative (liste lue dans `launcher.json`), pré-remplis via les choix enregistrés de l'app (`launcher.<VAR>`), sans les bloquer. Réglages par défaut appliqués automatiquement à chaque nouveau build Mac. `env.txt` reste accessible pour forcer un réglage.
 - Modules Python de nxnative installés tout seuls : la liste est lue dans le script de nxnative (ses vérifications et sa ligne `pip install`), donc un module ajouté par une future version (comme `zbic`) est pris en compte sans mise à jour d'Atelier NX. Vérifiée au lancement, après chaque mise à jour de nxnative et avant chaque build (rien n'est relancé tant que ni le Python ni nxnative ne changent) ; ce qui manque est installé dans le Python des Réglages avec `uv pip` (sinon `pip`, installé au besoin par `ensurepip`). Si un build échoue quand même sur un module manquant, il est installé et le jeu relancé une fois. Si l'installation échoue, la file se met en pause avec un seul message et un bouton « Réessayer », au lieu de faire échouer tous les jeux un par un.
+- Outils du Mac installés tout seuls, eux aussi : avant chaque build, Atelier NX vérifie ce que vérifie nxnative (liste des outils lue dans son script) et installe ce qui manque, sans bloquer la page : outils Homebrew (`xcodegen` pour l'iPhone, `zstd`, `glslang`), chaîne Metal (`xcodebuild -downloadComponent MetalToolchain`, environ 850 Mo, téléchargée à part depuis Xcode 26) et, pour un build iPhone, le SDK iOS (`xcodebuild -downloadPlatform iOS`), avec la progression dans la file. Ce qui demande la main de l'utilisateur est préparé : Homebrew absent → son installation s'ouvre dans Terminal ; Xcode absent → sa page s'ouvre dans l'App Store ; Xcode pas sélectionné ou licence pas acceptée → macOS demande le mot de passe administrateur. Un build qui échoue quand même sur un outil manquant le réinstalle et relance le jeu une fois.
 - Vérifie et installe les mises à jour de nxnative (`git pull`), et signale les jeux construits avec une ancienne version : nombre de changements depuis le build, et ceux qui citent le jeu (son profil, son nom ou son identifiant dans le message), avec un lien vers chacun sur GitHub. Une app déplacée est retrouvée dans le dossier des apps des Réglages, et une app construite sur un autre Mac y est reconnue (jeu et commit nxnative lus dans son `Info.plist`).
 - « Compatibles que tu n'as pas » : les jeux qui ont un profil nxnative et ne sont pas dans le dossier (branche distante lue par `git fetch` toutes les 6 h, variantes régionales fusionnées, « nouveau » pour les profils arrivés depuis la dernière mise à jour du clone), triés de A à Z ou par date d'arrivée du profil. Un clic ouvre le profil sur GitHub.
 
@@ -34,11 +35,12 @@ Réglages et état : `~/Library/Application Support/AtelierNX/` (`config.json`, 
 
 ## Installation
 
-1. Prérequis de nxnative : Mac Apple Silicon, Xcode 27.1 et sa chaîne Metal, Homebrew, et votre propre `prod.keys` (extrait de votre console).
+1. Prérequis : Mac Apple Silicon, [Xcode](https://apps.apple.com/app/id497799835) (ouvert une fois), [Homebrew](https://brew.sh) et votre propre `prod.keys` (extrait de votre console). Le reste (Python 3.13, `xcodegen`, `zstd`, `glslang`, chaîne Metal, SDK iOS pour l'iPhone) est installé par Atelier NX quand il en a besoin. À la main, c'est l'équivalent de :
    ```
-   brew install xcodegen zstd glslang dotnet-sdk python@3.13
+   brew install xcodegen zstd glslang python@3.13
+   xcodebuild -downloadComponent MetalToolchain
    ```
-2. nxnative : si Atelier NX ne le trouve pas dans le dossier des Réglages (`~/nxnative` par défaut), il propose de l'installer (bouton « Installer nxnative » en haut : clone, environnement `.venv` et modules Python ; il faut un Python 3.12+ de Homebrew). Pour l'installer ailleurs, changer « Dossier nxnative » dans Réglages d'abord. À la main, c'est l'équivalent de :
+2. nxnative : si Atelier NX ne le trouve pas dans le dossier des Réglages (`~/nxnative` par défaut), il propose de l'installer (bouton « Installer nxnative » en haut : clone, Python 3.13 de Homebrew au besoin, environnement `.venv`, modules Python, puis les outils du Mac). Pour l'installer ailleurs, changer « Dossier nxnative » dans Réglages d'abord. À la main, c'est l'équivalent de :
    ```
    git clone https://github.com/seedds/nxnative ~/nxnative
    cd ~/nxnative

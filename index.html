@@ -449,9 +449,10 @@ function qThumb(id) { const g = S.games.find(x => x.id === id) || { name: '?' };
 function renderQueue() {
   const box = $('#queueBox'); if (!box || !S) return;
   const q = S.queue, cur = S.job.busy ? (S.job.item || S.job.info) : null;
-  if (!cur && !q.items.length && !q.history.length && !S.prereqs?.error) { box.innerHTML = ''; return; }
+  if (!cur && !q.items.length && !q.history.length && !S.prereqs?.error && !S.prereqs?.step) { box.innerHTML = ''; return; }
   let h = `<div class="group" style="display:flex;align-items:center">File de construction${q.items.length ? ' · ' + q.items.length + ' à suivre' : ''}<span style="margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400"><button class="link small" onclick="openBatch()">+ plusieurs</button>${q.items.length || q.paused ? `<button class="link small" onclick="pauseQueue(${!q.paused})">${q.paused ? '▶ Reprendre' : '⏸ Pause'}</button>` : ''}</span></div>`;
-  if (S.prereqs?.error) h += `<div class="note err small" style="margin:8px 12px;white-space:pre-wrap">${esc(S.prereqs.error)}<br><button class="link" onclick="retryPrereqs(this)">Réessayer l'installation</button> <span class="muted">(la file reprend si ça marche)</span></div>`;
+  if (S.prereqs?.step) h += `<div class="note small" style="margin:8px 12px">⏳ ${esc(S.prereqs.step)}<br><span class="muted">Installation de ce qu'il faut pour construire ; la file démarre ensuite.</span></div>`;
+  else if (S.prereqs?.error) h += `<div class="note err small" style="margin:8px 12px;white-space:pre-wrap">${esc(S.prereqs.error)}<br><button class="link" onclick="retryPrereqs(this)">Réessayer l'installation</button> <span class="muted">(la file reprend si ça marche)</span></div>`;
   if (q.paused) h += `<div class="note warn small" style="margin:8px 12px">File en pause : aucun nouveau build ne démarrera.${cur ? ' Le build en cours continue.' : ''}</div>`;
   if (cur) {
     const p = live.prog, f = p?.frac, st = live.cur;
@@ -470,8 +471,8 @@ function renderQueue() {
 function pick(id) { sel = id; renderList(); renderDetail(); }
 async function moveItem(qid, delta) { await api('/api/queue/move', { qid, delta }); refresh(); }
 async function removeItem(qid) { await api('/api/queue/remove', { qid }); refresh(); }
-async function retryPrereqs(b) { b.textContent = 'Installation…'; b.disabled = true;
-  try { const r = await api('/api/prereqs/install', {}); if (!r.ok) alertBox(r.msg); } catch (e) { alertBox(e.message); } refresh(); }
+async function retryPrereqs(b) { b.textContent = 'Installation…'; b.disabled = true; prereqBusy = true;
+  try { const r = await api('/api/prereqs/install', {}); if (!r.ok) alertBox(r.msg); } catch (e) { alertBox(e.message); } prereqBusy = false; refresh(); }
 async function pauseQueue(paused) { await api('/api/queue/pause', { paused }); refresh(); }
 async function clearHistory() { await api('/api/queue/clear-history', {}); refresh(); }
 async function cancelBuild() { await api('/api/cancel', {}); }
@@ -664,6 +665,8 @@ if (location.protocol === 'file:' || TOKEN.startsWith('__')) {
 refresh().then(() => { if (S.job.info && sel !== BATCH) { sel = S.job.info.id; follow(); renderList(); renderDetail(); } })
   .catch(e => offline('Le serveur d\'Atelier NX ne répond pas (' + esc(e.message) + '). Quitte et relance l\'app.'));
 setInterval(() => { if (!S?.job.busy) refresh(); }, 30000);
+let prereqBusy = false;   // installation d'outils (chaîne Metal…) : suivie toutes les 2 s
+setInterval(() => { if (prereqBusy || S?.prereqs?.step) refresh(); }, 2000);
 </script>
 </body>
 </html>
