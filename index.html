@@ -321,7 +321,8 @@ function renderDetail() {
     }
     if (g.builds.some(b => b.platform === 'mac-app')) {
       h += `<p class="muted small">Une fenêtre de réglages s'ouvre avant le jeu (langue, plein écran…) et retient tes choix. Tu peux la masquer (case « Show this window at launch », ou ici dans « Réglages du jeu ») ; maintiens ⌥ (Option) au lancement pour la revoir.</p>`;
-      if (g.envTxt.length) h += `<div class="note warn small">Réglages forcés dans env.txt (grisés dans la fenêtre du jeu) : <code>${esc(g.envTxt.join('  '))}</code> <button class="link" onclick="editEnv('${g.id}')">modifier</button></div>`;
+      if (g.envTxt.length) h += `<div class="note warn small">Réglages forcés dans env.txt (grisés dans la fenêtre du jeu, et emportés par l'app sur un autre Mac) : <code>${esc(g.envTxt.join('  '))}</code> <button class="link" onclick="editEnv('${g.id}')">modifier</button></div>`;
+      h += `<div class="row small"><span class="muted">${g.shaders ? `${g.shaders} shaders vus en jouant, compilés avant le démarrage du jeu` : 'Aucun shader vu en jouant pour l\'instant'}${S.config.sharedShaders !== '0' ? ' · liste partagée entre tes Macs (dossier des apps)' : ' · liste de ce Mac seulement'}.</span></div>`;
       if (g.save.exists) h += `<div class="row small"><span class="muted">Sauvegarde présente.</span><button class="link" onclick="openIt('${g.id}','mac-app','save')">Dossier de sauvegarde</button></div>`;
     }
     h += `</div>`;
@@ -598,7 +599,7 @@ $('#btnApplyDefaults').onclick = async () => { const r = await api('/api/prefs/d
 
 let envFor = null;
 function editEnv(id) { envFor = id; $('#envText').value = S.games.find(g => g.id === id).envTxt.join('\n'); dlgEnv.showModal(); }
-$('#btnSaveEnv').onclick = async () => { await api('/api/env', { id: envFor, lines: $('#envText').value.split('\n') }); dlgEnv.close(); refresh(); };
+$('#btnSaveEnv').onclick = async () => { const r = await api('/api/env', { id: envFor, lines: $('#envText').value.split('\n') }); dlgEnv.close(); if (r.note) alertBox(r.note); refresh(); };
 
 const FIELDS = [['romDir','Dossier des jeux Switch','folder'],['keys','prod.keys','file'],['outDir','Dossier des apps construites','folder'],['workDir','Dossier de travail (fichiers de build)','folder'],['nxnative','Dossier nxnative (clone de seedds/nxnative)','folder'],['python','Python (3.12 ou plus, avec les modules)','file'],['language','Langue par défaut',''],['lowPriority','Priorité des builds','']];
 $('#btnSettings').onclick = () => {
@@ -607,6 +608,10 @@ $('#btnSettings').onclick = () => {
   const d = S.config.gameDefaults || {};
   $('#settingsForm').innerHTML += `<h3 style="margin:18px 0 4px">Réglages par défaut des jeux</h3><p class="muted small" style="margin-top:0">Pré-remplis dans la fenêtre de chaque jeu au moment où tu le construis pour Mac (modifiables ensuite dans le jeu). Pour un jeu déjà construit : « Réglages du jeu… » → « Appliquer mes réglages par défaut ».</p>`
     + GLOBAL_DEFAULTS.map(([k, opts, note, label]) => `<div class="row"><label class="k">${esc(label || FR[k][0])}</label><select id="gd_${k.replace('.', '_')}"><option value="">Défaut du jeu</option>${opts.map(([v, l]) => `<option value="${v}" ${d[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select>${note ? `<span class="muted small">${note}</span>` : ''}</div>`).join('');
+  $('#settingsForm').innerHTML += `<h3 style="margin:18px 0 4px">Shaders</h3>
+    <p class="muted small" style="margin-top:0">Chaque jeu note les shaders qu'il compile en jouant (c'est ce qui le fait saccader la première fois) et les compile tous avant de démarrer aux lancements suivants. La version compilée reste sur chaque Mac : elle dépend de sa puce.</p>
+    <div class="row"><label><input type="checkbox" id="cf_sharedShaders" ${S.config.sharedShaders !== '0' ? 'checked' : ''}> Partager la liste des shaders entre mes Macs : rangée dans le dossier des apps (<code>nxnative-shaders</code>), un Mac compile d'avance ce que l'autre a déjà vu. Les apps déjà construites sont mises à jour (avec les réglages env.txt de chaque jeu).</label></div>
+    <div class="row"><button onclick="applyShaders(this)">Mettre à jour les apps déjà construites</button><span id="shadersMsg" class="muted small"></span></div>`;
   $('#settingsForm').innerHTML += `<h3 style="margin:18px 0 4px">Place disque des builds</h3>
     <p class="muted small" style="margin-top:0">nxnative garde dans le dossier de travail l'extraction de chaque jeu et ses shaders traduits, pour reconstruire plus vite. Ce qu'il n'utilise plus va dans un dossier « obsolete », vidé seulement au build réussi suivant.</p>
     <div class="row"><label><input type="checkbox" id="cf_cleanObsolete" ${S.config.cleanObsolete !== '0' ? 'checked' : ''}> Supprimer les fichiers inutilisés (« obsolete ») après chaque build réussi</label></div>
@@ -633,8 +638,12 @@ async function cleanAllBuilds(b) {
   b.disabled = false; b.textContent = 'Supprimer tous les fichiers de build…';
 }
 async function cleanAll(b) { b.disabled = true; try { const r = await api('/api/space/clean', { id: '*', what: 'obsolete' }); for (const k in SPACE) delete SPACE[k]; $('#spaceAll').innerHTML = `<div class="small">${r.freed ? gb(r.freed) + ' libérés.' : 'Rien à supprimer.'}</div>`; } catch (e) { alertBox(e.message); } }
+async function applyShaders(b) { b.disabled = true; b.textContent = 'Mise à jour…';
+  try { const r = await api('/api/shaders/apply', {}); $('#shadersMsg').textContent = (r.changed ? `${r.changed} app(s) mise(s) à jour.` : 'Les apps sont déjà à jour.') + (r.errors.length ? ' ' + r.errors.join(' ') : ''); }
+  catch (e) { $('#shadersMsg').textContent = e.message; }
+  b.disabled = false; b.textContent = 'Mettre à jour les apps déjà construites'; }
 async function choose(k, kind) { const r = await api('/api/choose', { kind }); if (r.path) $('#cf_' + k).value = r.path; }
-$('#btnSaveSettings').onclick = async () => { const b = { gameDefaults: {}, cleanObsolete: $('#cf_cleanObsolete').checked ? '1' : '0', cleanAfterBuild: $('#cf_cleanAfterBuild').checked ? '1' : '0' }; FIELDS.forEach(([k]) => b[k] = $('#cf_' + k).value);
+$('#btnSaveSettings').onclick = async () => { const b = { gameDefaults: {}, sharedShaders: $('#cf_sharedShaders').checked ? '1' : '0', cleanObsolete: $('#cf_cleanObsolete').checked ? '1' : '0', cleanAfterBuild: $('#cf_cleanAfterBuild').checked ? '1' : '0' }; FIELDS.forEach(([k]) => b[k] = $('#cf_' + k).value);
   GLOBAL_DEFAULTS.forEach(([k]) => { const v = $('#gd_' + k.replace('.', '_')).value; if (v) b.gameDefaults[k] = v; }); await api('/api/config', b); dlgSettings.close(); refresh(); };
 
 $('#btnCheck').onclick = async () => {

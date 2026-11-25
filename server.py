@@ -30,6 +30,7 @@ DEFAULTS = {
     'gameDefaults': {},   # {DM_…: valeur, 'window.show': '0'/'1'} pré-remplis à chaque nouveau build Mac
     'cleanObsolete': '1',   # vider les dossiers « obsolete » de nxnative après chaque build réussi
     'cleanAfterBuild': '0',   # supprimer tous les fichiers de build d'un jeu après son build réussi (le suivant repart de zéro)
+    'sharedShaders': '1',   # liste des shaders vus en jouant sur le disque des apps, commune à tous les Macs (shared_list)
 }
 GAME_EXT = {'.nsp', '.xci', '.nsz', '.xcz', '.nup'}   # .nup : conteneur NUP (jeu, mises à jour et DLC en un fichier, sans prod.keys)
 TOKEN = secrets.token_urlsafe(24)
@@ -958,6 +959,7 @@ def scan(cfg):
             'icon': icon_url(gid),
             'save': {'exists': save_dst.is_dir() and any(save_dst.iterdir())},
             'envTxt': read_env_txt(gid),
+            'shaders': shader_count(cfg, gid),
         })
     if state_moved:
         with LOCK:   # relu sous verrou : un build qui se termine écrit aussi state.json
@@ -1060,6 +1062,107 @@ def read_env_txt(gid):
         return [l for l in p.read_text().splitlines() if l.strip() and not l.startswith('#')]
     except Exception:
         return []
+
+
+# ---------- shaders partagés et réglages intégrés à l'app ----------
+# Le jeu note chaque pipeline qu'il compile en jouant dans pso_user.tsv (lignes S/R/C, ordre de première utilisation), et
+# chaque lancement suivant les compile tous avant la première image (« Preparing shaders »). Par défaut cette liste est dans
+# ~/Library/Application Support/nxnative/<id>/, sur un seul Mac. Avec « shaders partagés », l'app la lit et l'écrit dans
+# <dossier des apps>/nxnative-shaders/<id>/pso_user.tsv : un Mac compile d'avance ce que l'autre a déjà vu. Le cache compilé
+# (pso_archive) reste sur chaque Mac (DM_PSO_ARCHIVE relatif au dossier du jeu, où le lanceur se place) : il est propre au
+# GPU (M3 et M2 Pro n'ont pas le même). Les deux réglages vont dans l'app (Resources/dm/env.txt, lu par le lanceur après
+# celui du Mac), avec les lignes du env.txt du jeu (DM_FPS_TARGET…) : ils suivent l'app sur un autre Mac.
+SHADER_KEYS = ('DM_PSO_USER', 'DM_PSO_ARCHIVE')
+
+
+def shared_list(cfg, gid):
+    return Path(cfg['outDir']) / 'nxnative-shaders' / gid / 'pso_user.tsv'
+
+
+def merge_lists(dst, *srcs):
+    """Ajoute à dst les lignes des autres listes qu'il n'a pas encore, dans leur ordre. Renvoie le nombre de lignes ajoutées."""
+    try:
+        have = dst.read_text(errors='replace').splitlines() if dst.is_file() else []
+    except OSError:
+        return 0
+    seen, new = set(have), []
+    for s in srcs:
+        try:
+            lines = s.read_text(errors='replace').splitlines() if s and s.is_file() and s != dst else []
+        except OSError:
+            continue
+        for l in lines:
+            if l.strip() and not l.startswith('#') and l not in seen:
+                seen.add(l); new.append(l)
+    if new:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(dst.name + '.tmp')
+        tmp.write_text('\n'.join(have + new) + '\n'); tmp.replace(dst)
+    return len(new)
+
+
+def shader_count(cfg, gid):
+    p = shared_list(cfg, gid) if cfg.get('sharedShaders', '1') != '0' else NX_SUPPORT / gid / 'pso_user.tsv'
+    try:
+        return sum(1 for l in p.read_text(errors='replace').splitlines() if l[:2] in ('S\t', 'R\t', 'C\t', 'M\t'))
+    except OSError:
+        return 0
+
+
+def sync_lists(cfg, gid):
+    """Réunit la liste de ce Mac et la liste partagée, dans le sens du réglage (rien n'est perdu en changeant d'avis)."""
+    local, shared = NX_SUPPORT / gid / 'pso_user.tsv', shared_list(cfg, gid)
+    if cfg.get('sharedShaders', '1') != '0':
+        if Path(cfg['outDir']).is_dir():
+            merge_lists(shared, local)
+    elif shared.is_file():
+        merge_lists(local, shared)
+
+
+def app_env_lines(cfg, gid):
+    lines = [l for l in read_env_txt(gid) if '=' in l and l.split('=', 1)[0].strip() not in SHADER_KEYS]
+    if cfg.get('sharedShaders', '1') != '0' and cfg['outDir']:
+        lines += [f'DM_PSO_USER={shared_list(cfg, gid)}', 'DM_PSO_ARCHIVE=pso_archive']
+    return lines
+
+
+def bundle_env(cfg, gid, app):
+    """Met app_env_lines dans une app déjà construite et la re-signe (signature ad hoc seulement). Renvoie True si changée."""
+    p = app / 'Contents/Resources/dm/env.txt'
+    lines = app_env_lines(cfg, gid)
+    text = ('# Écrit par Atelier NX (env.txt du jeu et shaders partagés)\n' + '\n'.join(lines) + '\n') if lines else ''
+    try:
+        cur = [l for l in p.read_text().splitlines() if l.strip() and not l.startswith('#')] if p.is_file() else []
+    except OSError:
+        cur = []
+    if cur == lines or not p.parent.is_dir():   # le build l'a déjà mis (--env-file), sans le commentaire
+        return False
+    sig = subprocess.run(['codesign', '-dv', str(app)], capture_output=True, text=True).stderr
+    if 'Signature=adhoc' not in sig:   # signée avec un vrai certificat : la re-signer en ad hoc la changerait
+        raise ValueError(f"{app.name} n'a pas une signature ad hoc : non modifiée.")
+    if text:
+        p.write_text(text)
+    else:
+        p.unlink()
+    r = subprocess.run(['codesign', '--force', '--sign', '-', str(app)], capture_output=True, text=True)
+    if r.returncode:
+        raise ValueError(f'{app.name} : signature impossible ({r.stderr.strip()[-200:]})')
+    return True
+
+
+def apply_shader_settings(cfg):
+    """Pour chaque jeu déjà construit pour Mac : réunit les listes et met à jour l'env.txt intégré. (changées, erreurs)"""
+    changed, errors = 0, []
+    for gid, v in load_json(STATE, {}).items():
+        b = v.get('builds', {}).get('mac-app')
+        if not b or not Path(b['out']).exists():
+            continue
+        sync_lists(cfg, gid)
+        try:
+            changed += bundle_env(cfg, gid, Path(b['out']))
+        except (OSError, ValueError) as e:
+            errors.append(str(e))
+    return changed, errors
 
 
 def icon_url(gid):
@@ -1367,6 +1470,14 @@ def start_build(cfg, req):
         cmd += ['--shader-files']
     if platform == 'ios' and req.get('showFps') is False:   # nxnative l'affiche par défaut sur iPhone
         cmd += ['--no-show-fps']
+    if platform == 'mac-app':   # env.txt du jeu et shaders partagés, intégrés à l'app (Resources/dm/env.txt)
+        sync_lists(cfg, game['id'])
+        lines = app_env_lines(cfg, game['id'])
+        envf = folder / 'atelier-env.txt'
+        if lines:
+            envf.write_text('\n'.join(lines) + '\n'); cmd += ['--env-file', str(envf)]
+        else:
+            envf.unlink(missing_ok=True)
     log = folder / 'atelier.log'
     with JOB.cond:
         JOB.events, JOB.result, JOB.cancelled = [], None, False
@@ -1690,7 +1801,12 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(req.get('gameDefaults'), dict):
                     cur['gameDefaults'] = {k: str(v) for k, v in req['gameDefaults'].items()
                                            if re.fullmatch(r'DM_[A-Z0-9_]+|window\.show', k) and v not in (None, '')}
-                save_json(CONFIG, cur); return self.send(200, {'ok': True})
+                old = {**DEFAULTS, **load_json(CONFIG, {})}
+                shared_changed = any(cur.get(k, DEFAULTS[k]) != old[k] for k in ('sharedShaders', 'outDir'))
+                save_json(CONFIG, cur)
+                if shared_changed:   # les apps déjà construites suivent le réglage
+                    threading.Thread(target=lambda: _quiet(apply_shader_settings, config()), daemon=True).start()
+                return self.send(200, {'ok': True})
             if u.path == '/api/choose':
                 kind = req.get('kind', 'folder')
                 script = ('POSIX path of (choose folder with prompt "Choisir un dossier")' if kind == 'folder'
@@ -1738,7 +1854,16 @@ class Handler(BaseHTTPRequestHandler):
                     p.parent.mkdir(parents=True, exist_ok=True); p.write_text('\n'.join(lines) + '\n')
                 elif p.exists():
                     p.unlink()
-                return self.send(200, {'ok': True})
+                app, note = mac_app(gid), ''
+                if app:   # l'app emporte ces réglages sur un autre Mac
+                    try:
+                        bundle_env(cfg, gid, app)
+                    except (OSError, ValueError) as e:
+                        note = str(e)
+                return self.send(200, {'ok': True, 'note': note})
+            if u.path == '/api/shaders/apply':
+                changed, errors = apply_shader_settings(cfg)
+                return self.send(200, {'ok': not errors, 'changed': changed, 'errors': errors})
             if u.path in ('/api/nx/check', '/api/nx/pull') and not nx_present(cfg):   # dossier vide ou absent : pas un clone
                 return self.send(200, {'ok': False, 'missing': True, 'msg': f"nxnative n'est pas installé dans {cfg['nxnative']}."})
             if u.path == '/api/nx/check':
@@ -1839,6 +1964,7 @@ def main():
     save_json(SUPPORT / 'server.json', {'port': port, 'pid': os.getpid()})
     migrate_workdir(config())
     threading.Thread(target=catalog_loop, daemon=True).start()
+    threading.Thread(target=lambda: _quiet(apply_shader_settings, config()), daemon=True).start()   # listes réunies, apps à jour
     if nx_present(config()):   # sinon la page propose d'installer nxnative (qui installe aussi les modules)
         threading.Thread(target=lambda: _quiet(ensure_prereqs, config()), daemon=True).start()   # vérifié dès le lancement
     threading.Timer(2.0, kick).start()         # reprend une file laissée non vide (sauf si elle est en pause)
